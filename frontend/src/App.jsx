@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { api, getStoredUser, storeUser } from './api';
 import { ToastProvider, ROLE_LABELS } from './components.jsx';
+import NotificationsBell from './components/NotificationsBell.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Users from './pages/Users.jsx';
@@ -37,6 +38,8 @@ function Layout({ children }) {
   const { user, logout } = useAuth();
   const location = useLocation();
   const items = NAV_ITEMS.filter((i) => i.roles.includes(user.role));
+  // La campana de compras web es solo para quienes gestionan pagos
+  const canSeeNotifications = ['admin', 'seller'].includes(user.role);
 
   return (
     <div className="layout">
@@ -66,7 +69,7 @@ function Layout({ children }) {
           </button>
           <div className="studio-brand">
             <img src="/astravia-logo.jpg" alt="Astravia Studio" />
-            <span>ASTRAVIA STUDIO</span>
+            <span>Desarrollado por<br /><strong>ASTRAVIA STUDIO</strong></span>
           </div>
         </div>
       </aside>
@@ -80,8 +83,18 @@ function Layout({ children }) {
           <span className="topbar-title">
             {items.find((i) => location.pathname.startsWith(i.to))?.label || ''}
           </span>
-          <button type="button" className="icon-btn" onClick={logout} title="Cerrar sesión">⏻</button>
+          <div className="topbar-actions">
+            {canSeeNotifications ? <NotificationsBell /> : null}
+            <button type="button" className="icon-btn" onClick={logout} title="Cerrar sesión">⏻</button>
+          </div>
         </header>
+
+        {/* En escritorio el topbar está oculto: la campana flota arriba a la derecha */}
+        {canSeeNotifications ? (
+          <div className="desktop-bell">
+            <NotificationsBell />
+          </div>
+        ) : null}
 
         <main className="main">{children}</main>
 

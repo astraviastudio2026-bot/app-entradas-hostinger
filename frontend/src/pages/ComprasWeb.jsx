@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import {
   ColorBadge, EmptyState, Modal, Spinner, StatCard, TICKET_COLORS, fmtDate, fmtMoney, useToast,
@@ -44,6 +44,10 @@ export default function ComprasWeb() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
 
+  // ?rq=<id> viene de la campana de notificaciones: abre y destaca esa solicitud
+  const [searchParams, setSearchParams] = useSearchParams();
+  const highlightId = searchParams.get('rq');
+
   // filtros
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('pending');
@@ -72,6 +76,18 @@ export default function ComprasWeb() {
 
   useEffect(load, [status, color, dateFrom, dateTo]);
 
+  useEffect(() => {
+    if (!highlightId) return;
+    api(`/purchases/${highlightId}`)
+      .then((d) => setDetail(d.request))
+      .catch(() => {});
+  }, [highlightId]);
+
+  const closeDetail = () => {
+    setDetail(null);
+    if (highlightId) setSearchParams({}, { replace: true });
+  };
+
   const approve = async (request) => {
     if (busy) return; // bloqueo anti doble clic
     setBusy(true);
@@ -79,7 +95,7 @@ export default function ComprasWeb() {
       const d = await api(`/purchases/${request.id}/approve`, { method: 'POST' });
       toast(d.message, d.emailSent ? 'success' : 'warning');
       setApproving(null);
-      setDetail(null);
+      closeDetail();
       load();
     } catch (err) {
       toast(err.message, 'error');
@@ -105,7 +121,7 @@ export default function ComprasWeb() {
       toast(d.message, d.emailSent ? 'success' : 'warning');
       setRejecting(null);
       setRejectReason('');
-      setDetail(null);
+      closeDetail();
       load();
     } catch (err) {
       toast(err.message, 'error');
@@ -188,7 +204,7 @@ export default function ComprasWeb() {
             </thead>
             <tbody>
               {requests.map((r) => (
-                <tr key={r.id}>
+                <tr key={r.id} className={r.id === highlightId ? 'row-highlight' : ''}>
                   <td data-label="Código">
                     <button type="button" className="code-link link-btn" onClick={() => setDetail(r)}>
                       {r.request_code}
@@ -244,7 +260,7 @@ export default function ComprasWeb() {
 
       {/* ---------- detalle ---------- */}
       {detail ? (
-        <Modal title={`Solicitud ${detail.request_code}`} onClose={() => setDetail(null)}>
+        <Modal title={`Solicitud ${detail.request_code}`} onClose={closeDetail}>
           <div className="purchase-detail">
             <div className="purchase-detail-head">
               <WebStatusBadge status={detail.status} />

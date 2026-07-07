@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS sale_phases (
   starts_at   DATETIME      NOT NULL,                       -- inicio del día en Ecuador convertido a UTC
   ends_at     DATETIME      NOT NULL,                       -- fin del día (23:59:59 EC) en UTC
   price       DECIMAL(10,2) NOT NULL,
+  max_tickets INT           NULL,                           -- cupo máximo de la fase (NULL = sin cupo propio)
   is_active   TINYINT(1)    NOT NULL DEFAULT 1,
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_phases_event (event_id),
@@ -224,6 +225,28 @@ CREATE TABLE IF NOT EXISTS web_request_counter (
 INSERT INTO web_request_counter (id, `last_value`)
 SELECT 1, 0
 WHERE NOT EXISTS (SELECT 1 FROM web_request_counter WHERE id = 1);
+
+-- ------------------------------------------------------------
+-- Notificaciones internas del panel (admin/organizadores).
+-- Hoy se usan para avisar de nuevas compras web; el diseño admite
+-- otros tipos futuros. `is_read` es global (panel compartido).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+  id           CHAR(36)     NOT NULL PRIMARY KEY,
+  type         VARCHAR(40)  NOT NULL,                       -- 'web_purchase', …
+  title        VARCHAR(160) NOT NULL,
+  message      VARCHAR(500) NOT NULL,
+  related_type VARCHAR(40)  NULL,                           -- 'purchase_request', …
+  related_id   CHAR(36)     NULL,
+  is_read      TINYINT(1)   NOT NULL DEFAULT 0,
+  user_id      CHAR(36)     NULL,                           -- reservado: notificación dirigida a un usuario
+  role_target  VARCHAR(30)  NULL,                           -- reservado: dirigida a un rol
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_notif_read    (is_read),
+  KEY idx_notif_created (created_at),
+  KEY idx_notif_related (related_type, related_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
 -- Auditoría de acciones

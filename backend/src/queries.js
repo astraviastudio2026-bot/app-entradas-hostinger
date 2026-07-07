@@ -23,4 +23,22 @@ async function getCurrentPhase(eventId, db = pool) {
   return rows[0] || null;
 }
 
-module.exports = { getActiveEvent, getCurrentPhase };
+// Entradas que consumen cupo de una fase: vendidas o usadas (las
+// anuladas lo liberan). Se calcula SIEMPRE desde `tickets` para no
+// duplicar contadores que puedan desincronizarse.
+async function phaseSoldCount(phaseId, db = pool) {
+  const [[{ sold }]] = await db.query(
+    "SELECT COUNT(*) AS sold FROM tickets WHERE sale_phase_id = ? AND status IN ('sold','used')",
+    [phaseId]
+  );
+  return Number(sold) || 0;
+}
+
+// true si la fase tiene cupo propio y ya se agotó
+async function isPhaseSoldOut(phase, db = pool) {
+  if (!phase || phase.max_tickets == null) return false;
+  const sold = await phaseSoldCount(phase.id, db);
+  return sold >= Number(phase.max_tickets);
+}
+
+module.exports = { getActiveEvent, getCurrentPhase, phaseSoldCount, isPhaseSoldOut };

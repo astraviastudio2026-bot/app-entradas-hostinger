@@ -63,6 +63,10 @@ async function main() {
   const schema = fs.readFileSync(path.join(__dirname, '..', 'schema.sql'), 'utf8');
   await conn.query(schema);
 
+  // Columnas nuevas sobre tablas ya existentes (CREATE TABLE IF NOT
+  // EXISTS no las agrega). Idempotente: solo si falta la columna.
+  await ensureColumn(conn, 'sale_phases', 'max_tickets', 'INT NULL AFTER price');
+
   // Copia pendiente: hay tablas legacy y la tabla nueva de usuarios está vacía
   // (cubre también una ejecución anterior interrumpida).
   let copyPending = false;
@@ -80,6 +84,14 @@ async function main() {
 
   console.log('Migración completada.');
   await conn.end();
+}
+
+async function ensureColumn(conn, table, column, definition) {
+  const [cols] = await conn.query(`SHOW COLUMNS FROM \`${table}\` LIKE ?`, [column]);
+  if (!cols.length) {
+    console.log(`  agregando columna ${table}.${column}…`);
+    await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
 }
 
 async function migrateLegacy(conn) {

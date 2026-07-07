@@ -215,11 +215,15 @@ export default function Comprar() {
                   <span className="pub-info-label">PRECIO</span>
                   <span className="pub-info-value pub-price">{phase ? fmtMoney(phase.price) : '—'}</span>
                 </div>
+                {/* Nunca mostrar cantidades exactas al público: solo mensaje general */}
                 <div className="pub-card pub-info-card">
-                  <span className="pub-info-label">DISPONIBILIDAD</span>
-                  <span className="pub-info-value">
-                    {info.sold_out ? 'AGOTADO' : `${info.available} disponibles`}
+                  <span className="pub-info-label">CUPOS</span>
+                  <span className={`pub-info-value${info.sold_out ? ' pub-soldout-value' : ''}`}>
+                    {info.sold_out ? 'AGOTADO' : 'CUPOS LIMITADOS'}
                   </span>
+                  {!info.sold_out ? (
+                    <span className="pub-muted-sm">Sujeto a disponibilidad y validación de pago</span>
+                  ) : null}
                 </div>
               </div>
               <p className="pub-flow-note">
@@ -405,8 +409,11 @@ function PubFooter() {
   return (
     <footer className="pub-footer">
       <span className="pub-footer-brand">| FLAGS |</span>
-      <span className="pub-footer-studio">FLAGS FEST · ASTRAVIA STUDIO</span>
       <Link to="/estado-compra" className="pub-footer-link">Consultar estado de mi compra</Link>
+      <div className="pub-studio">
+        <img src="/astravia-logo.jpg" alt="ASTRAVIA STUDIO" loading="lazy" />
+        <span>Desarrollado por <strong>ASTRAVIA STUDIO</strong></span>
+      </div>
     </footer>
   );
 }

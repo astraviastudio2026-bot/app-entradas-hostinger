@@ -113,6 +113,22 @@ router.post('/', requireRole('seller', 'admin'), ah(async (req, res) => {
       return res.status(409).json({ error: 'No hay una fase de venta activa para la fecha actual.' });
     }
 
+    // Cupo de la fase vigente (si tiene cupo propio definido). El lock
+    // del evento ya serializa ventas y aprobaciones: sin sobreventa.
+    if (phase.max_tickets != null) {
+      const [[{ phaseSold }]] = await conn.query(
+        "SELECT COUNT(*) AS phaseSold FROM tickets WHERE sale_phase_id = ? AND status IN ('sold','used')",
+        [phase.id]
+      );
+      if (phaseSold >= phase.max_tickets) {
+        await conn.rollback();
+        return res.status(409).json({
+          error: `El cupo de la fase "${phase.name}" ya se agotó (${phaseSold}/${phase.max_tickets}). `
+            + 'No se pueden registrar más ventas en esta fase.',
+        });
+      }
+    }
+
     // Límite global del evento
     const [[{ soldTotal }]] = await conn.query(
       "SELECT COUNT(*) AS soldTotal FROM tickets WHERE event_id = ? AND status IN ('sold','used')",
@@ -392,19 +408,43 @@ router.post('/validate-code', requireRole('validator', 'admin'), ah(async (req, 
   });
 }));
 
-// Historial de validaciones (para el scanner y el panel)
+// Historial de validaciones (para el scanner y el panel). Incluye un
+// resumen interno del evento activo: total vendidas, cuántas ya
+// ingresaron (usadas) y cuántas válidas faltan por ingresar.
 router.get('/validations', requireRole('validator', 'admin'), ah(async (req, res) => {
   const [rows] = await pool.query(
     `SELECT v.id, v.result, v.message, v.scanned_at, v.metadata,
-            t.short_code, t.customer_name, t.selected_color,
+            t.short_code, t.customer_name, t.customer_email, t.selected_color,
+            p.name AS phase_name,
             u.full_name AS validator_name
      FROM ticket_validations v
      LEFT JOIN tickets t ON t.id = v.ticket_id
+     LEFT JOIN sale_phases p ON p.id = t.sale_phase_id
      LEFT JOIN users u ON u.id = v.validator_id
      ORDER BY v.scanned_at DESC, v.id DESC
      LIMIT 200`
   );
-  res.json({ validations: rows });
+
+  let stats = null;
+  const [events] = await pool.query(
+    'SELECT id FROM events WHERE is_active = 1 ORDER BY created_at DESC, id DESC LIMIT 1'
+  );
+  if (events.length) {
+    const [[counts]] = await pool.query(
+      `SELECT SUM(status IN ('sold','used')) AS total,
+              SUM(status = 'used')           AS used,
+              SUM(status = 'sold')           AS pending
+       FROM tickets WHERE event_id = ?`,
+      [events[0].id]
+    );
+    stats = {
+      total: Number(counts.total) || 0,
+      used: Number(counts.used) || 0,
+      valid: Number(counts.pending) || 0,
+    };
+  }
+
+  res.json({ validations: rows, stats });
 }));
 
 // ------------------------------------------------------------

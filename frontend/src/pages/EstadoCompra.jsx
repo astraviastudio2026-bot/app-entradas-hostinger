@@ -190,7 +190,10 @@ export default function EstadoCompra() {
         </div>
 
         <footer className="pub-footer">
-          <span className="pub-footer-studio">FLAGS FEST · ASTRAVIA STUDIO</span>
+          <div className="pub-studio">
+            <img src="/astravia-logo.jpg" alt="ASTRAVIA STUDIO" loading="lazy" />
+            <span>Desarrollado por <strong>ASTRAVIA STUDIO</strong></span>
+          </div>
         </footer>
       </div>
     </div>

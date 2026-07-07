@@ -279,11 +279,13 @@ input[type='checkbox'] { width: auto; accent-color: var(--pink); }
 .user-meta strong { font-size: 0.88rem; }
 .user-meta span { font-size: 0.72rem; color: var(--text-dim); }
 .studio-brand {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  color: var(--text-dim); font-size: 0.58rem; letter-spacing: 0.2em;
-  opacity: 0.7; padding-top: 6px;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  color: var(--text-dim); font-size: 0.56rem; letter-spacing: 0.16em;
+  text-transform: uppercase; line-height: 1.6;
+  opacity: 0.75; padding-top: 10px; border-top: 1px solid var(--border);
 }
-.studio-brand img { width: 20px; height: 20px; border-radius: 6px; object-fit: cover; }
+.studio-brand strong { color: var(--text); font-weight: 700; letter-spacing: 0.2em; }
+.studio-brand img { width: 22px; height: 22px; border-radius: 7px; object-fit: cover; }
 
 .content-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .topbar {
@@ -1600,4 +1602,251 @@ input[type='checkbox'] { width: auto; accent-color: var(--pink); }
   .pub-bank-row span { min-width: 100%; }
   .pub-success-actions { flex-direction: column; width: 100%; }
   .pub-success-actions .pub-btn { width: 100%; }
+}
+
+/* ============================================================
+   AJUSTES 2026-07 · notificaciones, cupos por fase, historial
+   del scanner y branding ASTRAVIA STUDIO
+   ============================================================ */
+
+/* ---------- campana de notificaciones ---------- */
+.topbar-actions { display: flex; align-items: center; gap: 8px; }
+.desktop-bell {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 22px 0;
+  position: sticky;
+  top: 0;
+  z-index: 60;
+}
+.notif-wrap { position: relative; }
+.notif-btn { position: relative; display: inline-flex; align-items: center; justify-content: center; }
+.notif-btn.has-unread { color: var(--pink); border-color: rgba(255, 45, 120, 0.55); box-shadow: 0 0 16px rgba(255, 45, 120, 0.25); }
+.notif-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--grad);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 12px rgba(255, 45, 120, 0.6);
+}
+.notif-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(370px, calc(100vw - 24px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  z-index: 120;
+  overflow: hidden;
+}
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.notif-head h3 { margin: 0; }
+.notif-readall {
+  background: none;
+  border: none;
+  color: var(--coral);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+.notif-readall:hover { color: var(--pink); }
+.notif-list { max-height: min(52dvh, 420px); overflow-y: auto; }
+.notif-item {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(43, 39, 56, 0.6);
+  padding: 12px 16px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: var(--font-body);
+  transition: background 0.12s;
+}
+.notif-item:hover { background: rgba(255, 45, 120, 0.06); }
+.notif-item:last-child { border-bottom: none; }
+.notif-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex-shrink: 0;
+  background: transparent;
+}
+.notif-item.unread .notif-dot { background: var(--pink); box-shadow: 0 0 10px rgba(255, 45, 120, 0.7); }
+.notif-item.unread .notif-title { color: #fff; }
+.notif-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.notif-title {
+  font-family: var(--font-display);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.notif-msg {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.notif-item.unread .notif-msg { color: var(--text); }
+.notif-meta { display: flex; align-items: center; gap: 8px; font-size: 0.68rem; color: var(--text-dim); }
+.notif-empty { padding: 26px 16px; text-align: center; color: var(--text-dim); font-size: 0.85rem; }
+.notif-foot { border-top: 1px solid var(--border); padding: 10px 16px; text-align: center; }
+
+/* fila destacada al llegar desde una notificación */
+.row-highlight { background: rgba(255, 45, 120, 0.08); }
+.row-highlight td { border-bottom-color: rgba(255, 45, 120, 0.25); }
+
+/* ---------- cupos por fase ---------- */
+.soldout-badge {
+  background: rgba(255, 64, 64, 0.14);
+  color: var(--red);
+  border: 1px solid rgba(255, 64, 64, 0.45);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.phase-quota-track { height: 9px; margin-top: 2px; }
+.quota-fill.quota-full { background: linear-gradient(100deg, var(--red), #b00d22); box-shadow: 0 0 14px rgba(255, 64, 64, 0.5); }
+
+/* ---------- historial del scanner (cards + resumen) ---------- */
+.scan-hist-panel { display: flex; flex-direction: column; gap: 12px; }
+.scan-hist-panel h3 { margin-bottom: 0; }
+.scan-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.scan-stat {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+  text-align: center;
+}
+.scan-stat-value { font-family: var(--font-display); font-size: 1.35rem; font-weight: 700; }
+.scan-stat-label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); font-weight: 700; }
+.scan-stat-used { border-color: rgba(255, 198, 26, 0.4); }
+.scan-stat-used .scan-stat-value { color: var(--yellow); }
+.scan-stat-valid { border-color: rgba(47, 217, 86, 0.4); }
+.scan-stat-valid .scan-stat-value { color: var(--green); }
+.scan-hist-search { width: 100%; }
+.scan-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 460px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.scan-hist-card {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.scan-hist-valid { border-left-color: var(--green); }
+.scan-hist-already_used { border-left-color: var(--yellow); }
+.scan-hist-cancelled { border-left-color: var(--red); }
+.scan-hist-invalid { border-left-color: var(--text-dim); opacity: 0.8; }
+.scan-hist-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.scan-hist-code { font-family: var(--font-display); font-size: 0.82rem; font-weight: 700; letter-spacing: 0.08em; }
+.hist-badge {
+  padding: 3px 11px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.hist-valid { background: rgba(47, 217, 86, 0.14); color: var(--green); border: 1px solid rgba(47, 217, 86, 0.4); }
+.hist-already_used { background: rgba(255, 198, 26, 0.12); color: var(--yellow); border: 1px solid rgba(255, 198, 26, 0.35); }
+.hist-cancelled { background: rgba(255, 64, 64, 0.12); color: var(--red); border: 1px solid rgba(255, 64, 64, 0.4); }
+.hist-invalid { background: rgba(155, 149, 171, 0.1); color: var(--text-dim); border: 1px solid var(--border); }
+.scan-hist-name { font-weight: 700; font-size: 0.92rem; overflow-wrap: anywhere; }
+.scan-hist-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+}
+.scan-hist-color { display: inline-flex; align-items: center; gap: 6px; }
+.scan-hist-email { overflow-wrap: anywhere; }
+.scan-hist-time { font-size: 0.7rem; color: var(--text-dim); }
+
+/* ---------- branding ASTRAVIA STUDIO (público) ---------- */
+.pub-studio {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: var(--pub-dim);
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.pub-studio img {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  object-fit: cover;
+  opacity: 0.9;
+  box-shadow: 0 0 14px rgba(0, 0, 0, 0.5);
+}
+.pub-studio strong { color: rgba(255, 255, 255, 0.85); font-weight: 700; }
+.pub-soldout-value { color: var(--pub-red); text-shadow: 0 0 18px var(--pub-red-glow); }
+
+/* ---------- responsive de los ajustes ---------- */
+@media (max-width: 900px) {
+  .desktop-bell { display: none; } /* en móvil la campana vive en el topbar */
+  .notif-panel { position: fixed; top: 62px; right: 12px; left: 12px; width: auto; }
+  /* botones cómodos para el pulgar en tablas-card */
+  .row-actions { justify-content: flex-end; }
+  .row-actions .btn-sm { padding: 9px 16px; font-size: 0.82rem; }
+  .scan-stats { gap: 8px; }
+  .scan-stat { padding: 8px 6px; }
+  .scan-stat-value { font-size: 1.15rem; }
+  .scan-cards { max-height: none; }
 }

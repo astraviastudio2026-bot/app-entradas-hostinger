@@ -11,6 +11,15 @@ const RESULT_STYLES = {
   error: { icon: '⚠', title: 'ERROR DE CONEXIÓN', className: 'scan-error' },
 };
 
+// Etiquetas del historial: una validación "valid" significa que la
+// entrada ingresó correctamente en ese momento.
+const HIST_LABELS = {
+  valid: 'Válida',
+  already_used: 'Usada',
+  cancelled: 'Anulada',
+  invalid: 'Inválida',
+};
+
 // Ventana en la que se ignora el mismo QR (evita validar dos veces la
 // misma entrada por lecturas consecutivas de la cámara).
 const DUPLICATE_MS = 4000;
@@ -56,9 +65,13 @@ export default function Scanner() {
   const [result, setResult] = useState(null);
   const [manual, setManual] = useState('');
   const [history, setHistory] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [histQuery, setHistQuery] = useState('');
 
   const loadHistory = () => {
-    api('/tickets/validations').then((d) => setHistory(d.validations)).catch(() => {});
+    api('/tickets/validations')
+      .then((d) => { setHistory(d.validations); setStats(d.stats || null); })
+      .catch(() => {});
   };
   useEffect(loadHistory, []);
 
@@ -208,6 +221,14 @@ export default function Scanner() {
   const style = result ? RESULT_STYLES[result.status] || RESULT_STYLES.invalid : null;
   const tkColor = result?.ticket ? TICKET_COLORS[result.ticket.selected_color] : null;
 
+  // Historial filtrado por nombre, código o correo (recientes primero,
+  // tal como llega del backend)
+  const q = histQuery.trim().toLowerCase();
+  const filteredHistory = q
+    ? history.filter((v) => [v.short_code, v.customer_name, v.customer_email]
+      .some((f) => f && String(f).toLowerCase().includes(q)))
+    : history;
+
   return (
     <div className="page">
       <div className="page-head">
@@ -293,18 +314,66 @@ export default function Scanner() {
             </div>
           )}
 
-          <div className="panel">
+          <div className="panel scan-hist-panel">
             <h3>Historial de validaciones</h3>
-            {!history.length ? <p className="cell-sub">Aún no hay validaciones</p> : (
-              <div className="scan-history">
-                {history.slice(0, 25).map((v) => (
-                  <div key={v.id} className="scan-history-row">
-                    <span className={`scan-dot scan-dot-${v.result}`} />
-                    <span className="scan-history-code">{v.short_code || 'QR desconocido'}</span>
-                    <span className="scan-history-name">{v.customer_name || '—'}</span>
-                    <span className="scan-history-time">{fmtDate(v.scanned_at)}</span>
-                  </div>
-                ))}
+
+            {/* Resumen interno del ingreso (solo organizadores) */}
+            {stats ? (
+              <div className="scan-stats">
+                <div className="scan-stat">
+                  <span className="scan-stat-value">{stats.total}</span>
+                  <span className="scan-stat-label">Vendidas</span>
+                </div>
+                <div className="scan-stat scan-stat-used">
+                  <span className="scan-stat-value">{stats.used}</span>
+                  <span className="scan-stat-label">Usadas · ingresaron</span>
+                </div>
+                <div className="scan-stat scan-stat-valid">
+                  <span className="scan-stat-value">{stats.valid}</span>
+                  <span className="scan-stat-label">Válidas por ingresar</span>
+                </div>
+              </div>
+            ) : null}
+
+            <input
+              className="scan-hist-search"
+              value={histQuery}
+              onChange={(e) => setHistQuery(e.target.value)}
+              placeholder="Buscar por nombre, código o correo…"
+              autoComplete="off"
+            />
+
+            {!filteredHistory.length ? (
+              <p className="cell-sub">
+                {history.length ? 'Sin resultados para esa búsqueda' : 'Aún no hay validaciones'}
+              </p>
+            ) : (
+              <div className="scan-cards">
+                {filteredHistory.slice(0, 40).map((v) => {
+                  const c = v.selected_color ? TICKET_COLORS[v.selected_color] : null;
+                  return (
+                    <div key={v.id} className={`scan-hist-card scan-hist-${v.result}`}>
+                      <div className="scan-hist-top">
+                        <span className="scan-hist-code">{v.short_code || 'QR desconocido'}</span>
+                        <span className={`hist-badge hist-${v.result}`}>{HIST_LABELS[v.result] || v.result}</span>
+                      </div>
+                      <div className="scan-hist-name">{v.customer_name || '—'}</div>
+                      <div className="scan-hist-meta">
+                        {c ? (
+                          <span className="scan-hist-color">
+                            <ColorDot color={v.selected_color} /> {c.label}
+                          </span>
+                        ) : null}
+                        {v.phase_name ? <span>{v.phase_name}</span> : null}
+                        {v.customer_email ? <span className="scan-hist-email">{v.customer_email}</span> : null}
+                      </div>
+                      <div className="scan-hist-time">
+                        {fmtDate(v.scanned_at)}
+                        {v.validator_name ? ` · validó ${v.validator_name}` : ''}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

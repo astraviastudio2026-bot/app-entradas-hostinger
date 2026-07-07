@@ -183,6 +183,29 @@ router.post('/:id/approve', ah(async (req, res) => {
       return res.status(409).json({ error: 'Ya no quedan entradas disponibles: no se puede aprobar esta solicitud.' });
     }
 
+    // 2b) Cupo de la fase congelada en la solicitud: solo la aprobación
+    //     consume cupo, así que se valida aquí (con lock) y no al solicitar.
+    if (request.sale_phase_id) {
+      const [phaseRows] = await conn.query(
+        'SELECT id, name, max_tickets FROM sale_phases WHERE id = ? FOR UPDATE',
+        [request.sale_phase_id]
+      );
+      const phase = phaseRows[0];
+      if (phase && phase.max_tickets != null) {
+        const [[{ phaseSold }]] = await conn.query(
+          "SELECT COUNT(*) AS phaseSold FROM tickets WHERE sale_phase_id = ? AND status IN ('sold','used')",
+          [phase.id]
+        );
+        if (phaseSold >= phase.max_tickets) {
+          await conn.rollback();
+          return res.status(409).json({
+            error: `No se puede aprobar esta solicitud porque el cupo de la fase "${phase.name}" ya se agotó `
+              + `(${phaseSold}/${phase.max_tickets}). Amplía el cupo de la fase o rechaza la solicitud.`,
+          });
+        }
+      }
+    }
+
     // 3) Crear la entrada real (misma lógica que la venta manual:
     //    correlativo por evento, código corto global, QR token + hash).
     const [[{ maxNum }]] = await conn.query(
@@ -223,6 +246,12 @@ router.post('/:id/approve', ah(async (req, res) => {
   } finally {
     conn.release();
   }
+
+  // La notificación de "nueva compra web" queda resuelta (leída).
+  await pool.query(
+    "UPDATE notifications SET is_read = 1 WHERE related_type = 'purchase_request' AND related_id = ? AND is_read = 0",
+    [approvedRequest.id]
+  ).catch(() => {});
 
   // ---- PDF y correo FUERA de la transacción (igual que la venta
   // manual): si fallan, la aprobación no se revierte; el PDF se
@@ -330,6 +359,12 @@ router.post('/:id/reject', ah(async (req, res) => {
   } finally {
     conn.release();
   }
+
+  // La notificación de "nueva compra web" queda resuelta (leída).
+  await pool.query(
+    "UPDATE notifications SET is_read = 1 WHERE related_type = 'purchase_request' AND related_id = ? AND is_read = 0",
+    [request.id]
+  ).catch(() => {});
 
   // Correo automático al comprador (sin PDF, obviamente).
   const [[eventRow]] = await pool.query('SELECT name FROM events WHERE id = ?', [request.event_id]);

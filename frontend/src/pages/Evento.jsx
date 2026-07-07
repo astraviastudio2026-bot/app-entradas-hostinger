@@ -93,11 +93,12 @@ function PhaseForm({ initial, nextOrder, onSaved, onClose }) {
     name: initial.name,
     phase_order: initial.phase_order,
     price: initial.price,
+    max_tickets: initial.max_tickets ?? '',
     start_date: toInputDate(initial.starts_at),
     end_date: toInputDate(initial.ends_at),
     is_active: Boolean(initial.is_active),
   } : {
-    name: '', phase_order: nextOrder, price: '', start_date: '', end_date: '', is_active: true,
+    name: '', phase_order: nextOrder, price: '', max_tickets: '', start_date: '', end_date: '', is_active: true,
   });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -119,6 +120,7 @@ function PhaseForm({ initial, nextOrder, onSaved, onClose }) {
           name: form.name,
           phase_order: Number(form.phase_order),
           price: Number(form.price),
+          max_tickets: form.max_tickets === '' ? null : Number(form.max_tickets),
           start_date: form.start_date,
           end_date: form.end_date,
           is_active: form.is_active,
@@ -146,10 +148,27 @@ function PhaseForm({ initial, nextOrder, onSaved, onClose }) {
             <input type="number" min="1" step="1" value={form.phase_order} onChange={set('phase_order')} required />
           </label>
         </div>
-        <label className="field">
-          <span>Precio *</span>
-          <input type="number" min="0" step="0.01" value={form.price} onChange={set('price')} required />
-        </label>
+        <div className="form-row">
+          <label className="field">
+            <span>Precio *</span>
+            <input type="number" min="0" step="0.01" value={form.price} onChange={set('price')} required />
+          </label>
+          <label className="field">
+            <span>Cupo de entradas de la fase</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={form.max_tickets}
+              onChange={set('max_tickets')}
+              placeholder="Vacío = sin cupo propio"
+            />
+          </label>
+        </div>
+        <p className="form-note" style={{ textAlign: 'left', marginTop: -6 }}>
+          El cupo limita cuántas entradas pueden venderse/aprobarse en esta fase.
+          La suma de cupos de todas las fases no puede superar el total del evento.
+        </p>
         <div className="form-row">
           <label className="field">
             <span>Desde (día en Ecuador) *</span>
@@ -237,32 +256,100 @@ export default function Evento() {
       {!event ? null : !phases.length ? (
         <EmptyState text="Aún no hay fases de venta. Crea la primera." />
       ) : (
-        <div className="phase-grid">
-          {phases.map((p) => (
-            <div key={p.id} className={`panel phase-card${p.id === currentId ? ' phase-current' : ''}${p.is_active ? '' : ' phase-off'}`}>
-              <div className="phase-card-head">
-                <h3>{p.phase_order}. {p.name}</h3>
-                {p.id === currentId ? <span className="live-badge">VIGENTE</span> : null}
-              </div>
-              <div className="phase-price">{fmtMoney(p.price)}</div>
-              <div className="phase-dates">
-                <span>{toInputDate(p.starts_at)}</span>
-                <span>→ {toInputDate(p.ends_at)} (hora Ecuador)</span>
-              </div>
-              <div className="phase-sold">{p.tickets_sold} entradas vendidas</div>
-              <div className="row-actions">
-                <button type="button" className="btn btn-sm btn-ghost" onClick={() => setModal(p)}>Editar</button>
-                <button
-                  type="button"
-                  className={`btn btn-sm ${p.is_active ? 'btn-danger' : 'btn-primary'}`}
-                  onClick={() => togglePhase(p)}
-                >
-                  {p.is_active ? 'Desactivar' : 'Activar'}
-                </button>
-              </div>
+        <>
+          <div className="phase-grid">
+            {phases.map((p) => {
+              const sold = Number(p.tickets_sold) || 0;
+              const hasQuota = p.max_tickets != null;
+              const quota = hasQuota ? Number(p.max_tickets) : null;
+              const soldOut = hasQuota && sold >= quota;
+              const pct = hasQuota && quota > 0 ? Math.min(100, Math.round((sold / quota) * 100)) : 0;
+              return (
+                <div key={p.id} className={`panel phase-card${p.id === currentId ? ' phase-current' : ''}${p.is_active ? '' : ' phase-off'}`}>
+                  <div className="phase-card-head">
+                    <h3>{p.phase_order}. {p.name}</h3>
+                    {soldOut ? <span className="soldout-badge">AGOTADA</span>
+                      : p.id === currentId ? <span className="live-badge">VIGENTE</span> : null}
+                  </div>
+                  <div className="phase-price">{fmtMoney(p.price)}</div>
+                  <div className="phase-dates">
+                    <span>{toInputDate(p.starts_at)}</span>
+                    <span>→ {toInputDate(p.ends_at)} (hora Ecuador)</span>
+                  </div>
+                  {hasQuota ? (
+                    <>
+                      <div className="quota-track phase-quota-track">
+                        <div className={`quota-fill${soldOut ? ' quota-full' : ''}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="phase-sold">
+                        {sold} / {quota} vendidas · {Math.max(0, quota - sold)} restantes ({pct}%)
+                      </div>
+                    </>
+                  ) : (
+                    <div className="phase-sold">{sold} vendidas · sin cupo propio (usa el total del evento)</div>
+                  )}
+                  <div className="row-actions">
+                    <button type="button" className="btn btn-sm btn-ghost" onClick={() => setModal(p)}>Editar</button>
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${p.is_active ? 'btn-danger' : 'btn-primary'}`}
+                      onClick={() => togglePhase(p)}
+                    >
+                      {p.is_active ? 'Desactivar' : 'Activar'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Resumen interno de cupos por fase (nunca visible al público) */}
+          <div className="panel">
+            <h3>Cupos por fase</h3>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Fase</th><th>Fechas</th><th>Precio</th><th>Cupo</th>
+                    <th>Vendidas</th><th>Restantes</th><th>Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {phases.map((p) => {
+                    const sold = Number(p.tickets_sold) || 0;
+                    const hasQuota = p.max_tickets != null;
+                    const quota = hasQuota ? Number(p.max_tickets) : null;
+                    const soldOut = hasQuota && sold >= quota;
+                    return (
+                      <tr key={p.id} className={p.is_active ? '' : 'row-muted'}>
+                        <td data-label="Fase"><span className="cell-main">{p.phase_order}. {p.name}</span></td>
+                        <td data-label="Fechas">{toInputDate(p.starts_at)} → {toInputDate(p.ends_at)}</td>
+                        <td data-label="Precio">{fmtMoney(p.price)}</td>
+                        <td data-label="Cupo">{hasQuota ? quota : 'Sin cupo'}</td>
+                        <td data-label="Vendidas">{sold}</td>
+                        <td data-label="Restantes">{hasQuota ? Math.max(0, quota - sold) : '—'}</td>
+                        <td data-label="Estado">
+                          {soldOut ? <span className="status-badge status-rejected">Agotada</span>
+                            : p.id === currentId ? <span className="status-badge status-approved">Vigente</span>
+                              : p.is_active ? <span className="status-badge status-pending">Programada</span>
+                                : <span className="status-badge">Inactiva</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          ))}
-        </div>
+            <p className="cell-sub" style={{ marginTop: 10 }}>
+              Cupo asignado a fases:{' '}
+              <strong>
+                {phases.reduce((acc, p) => acc + (p.max_tickets != null ? Number(p.max_tickets) : 0), 0)}
+              </strong>{' '}
+              de <strong>{event.total_tickets}</strong> entradas totales del evento.
+              El público nunca ve estas cantidades: en /comprar solo se muestra “Cupos limitados”.
+            </p>
+          </div>
+        </>
       )}
 
       {event ? <PaymentSettings /> : null}

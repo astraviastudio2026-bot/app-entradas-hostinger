@@ -14,7 +14,7 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const { pool } = require('../db');
 const { ah, uuid, isValidEmail, COLORS } = require('../utils');
-const { getActiveEvent, getCurrentPhase } = require('../queries');
+const { getActiveEvent, getCurrentPhase, isPhaseSoldOut } = require('../queries');
 const { saveProofFile, readStoredFile, deleteStoredFile } = require('../storage');
 const { sendRequestReceivedEmail, sendCodeRecoveryEmail } = require('../webMailer');
 const { audit } = require('../audit');
@@ -116,8 +116,12 @@ router.get('/event', ah(async (req, res) => {
     soldCount(event.id),
   ]);
   const available = Math.max(0, event.total_tickets - sold);
+  const phaseSoldOut = available > 0 ? await isPhaseSoldOut(phase) : false;
   const salesEnabled = Boolean(settings && settings.public_sales_enabled);
 
+  // IMPORTANTE: esta respuesta es PÚBLICA. Nunca exponer cantidades
+  // exactas de entradas/cupos (solo booleanos de agotado); el detalle
+  // numérico vive en los endpoints internos del panel.
   res.json({
     event: {
       name: event.name,
@@ -125,8 +129,7 @@ router.get('/event', ah(async (req, res) => {
       location: event.location,
     },
     phase: phase ? { name: phase.name, price: phase.price, ends_at: phase.ends_at } : null,
-    available,
-    sold_out: available <= 0,
+    sold_out: available <= 0 || phaseSoldOut,
     sales_enabled: salesEnabled,
     payment: settings ? {
       bank_name: settings.bank_name,
@@ -223,10 +226,16 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
   );
   if (preDup.length) return res.status(409).json({ error: DUP_MESSAGE, duplicate: true });
 
-  // Disponibilidad (informativa: la definitiva se valida al aprobar)
+  // Disponibilidad (informativa: la definitiva se valida al aprobar).
+  // Nunca revelar cantidades: solo "agotado" genérico.
   const sold = await soldCount(event.id);
   if (sold >= event.total_tickets) {
     return res.status(409).json({ error: 'Lo sentimos: ya se agotaron las entradas disponibles.' });
+  }
+  if (await isPhaseSoldOut(phase)) {
+    return res.status(409).json({
+      error: 'Lo sentimos: los cupos de la fase de venta actual ya se agotaron. Mantente atento a la próxima fase.',
+    });
   }
 
   // ---- guardar comprobante y crear la solicitud ----
@@ -277,6 +286,24 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
     throw err;
   } finally {
     conn.release();
+  }
+
+  // Notificación interna para admin/organizadores (campana del panel).
+  // Si falla, la solicitud sigue registrada igual: no es crítica.
+  try {
+    const FLAG_LABELS = { verde: 'Green Flag', rojo: 'Red Flag', amarillo: 'Yellow Flag' };
+    await pool.query(
+      `INSERT INTO notifications (id, type, title, message, related_type, related_id, is_read, created_at)
+       VALUES (?, 'web_purchase', ?, ?, 'purchase_request', ?, 0, UTC_TIMESTAMP())`,
+      [
+        uuid(),
+        `Nueva compra web · ${requestCode}`,
+        `${buyerName} envió un pago por validar · ${FLAG_LABELS[color] || color} · $${Number(phase.price).toFixed(2)} · ${phase.name}`,
+        requestId,
+      ]
+    );
+  } catch (err) {
+    console.error('No se pudo crear la notificación interna:', err.message);
   }
 
   // Correo de confirmación (sin PDF, sin QR). Si falla, la solicitud

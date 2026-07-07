@@ -115,6 +115,20 @@ router.post('/events', ah(async (req, res) => {
   }
   const active = isActive === false ? 0 : 1;
 
+  // No reducir el total por debajo de la suma de cupos ya asignados a fases.
+  if (id) {
+    const [[{ phaseQuota }]] = await pool.query(
+      'SELECT COALESCE(SUM(max_tickets), 0) AS phaseQuota FROM sale_phases WHERE event_id = ? AND max_tickets IS NOT NULL',
+      [id]
+    );
+    if (Number(phaseQuota) > total) {
+      return res.status(422).json({
+        error: `Las fases ya tienen ${phaseQuota} entradas asignadas en cupos: el total del evento no puede ser menor. `
+          + 'Reduce primero los cupos por fase.',
+      });
+    }
+  }
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -177,7 +191,8 @@ router.get('/phases', ah(async (req, res) => {
 
 router.post('/phases', ah(async (req, res) => {
   const {
-    id, name, phase_order: phaseOrder, start_date: startDate, end_date: endDate, price, is_active: isActive,
+    id, name, phase_order: phaseOrder, start_date: startDate, end_date: endDate, price,
+    max_tickets: maxTickets, is_active: isActive,
   } = req.body || {};
 
   const event = await getActiveEvent();
@@ -191,8 +206,8 @@ router.post('/phases', ah(async (req, res) => {
     return res.status(422).json({ error: 'El orden de la fase debe ser un entero mayor o igual a 1' });
   }
   const priceNum = Number(price);
-  if (Number.isNaN(priceNum) || priceNum < 0) {
-    return res.status(422).json({ error: 'El precio debe ser un número mayor o igual a 0' });
+  if (price === '' || price == null || Number.isNaN(priceNum) || priceNum < 0) {
+    return res.status(422).json({ error: 'El precio de la fase es obligatorio (número mayor o igual a 0)' });
   }
   const startsAt = ecDayStartUtc(startDate);
   const endsAt = ecDayEndUtc(endDate);
@@ -204,24 +219,75 @@ router.post('/phases', ah(async (req, res) => {
   }
   const active = isActive === false ? 0 : 1;
 
+  // Cupo de la fase: vacío = sin cupo propio (solo límite del evento).
+  let maxNum = null;
+  if (maxTickets !== '' && maxTickets != null) {
+    maxNum = Number(maxTickets);
+    if (!Number.isInteger(maxNum) || maxNum < 1) {
+      return res.status(422).json({ error: 'El cupo de la fase debe ser un entero mayor a 0 (o vacío para no limitar)' });
+    }
+  }
+
+  const [others] = await pool.query(
+    'SELECT id, name, starts_at, ends_at, max_tickets, is_active FROM sale_phases WHERE event_id = ? AND id <> ?',
+    [event.id, id || '']
+  );
+
+  // La suma de cupos por fase no puede superar el total del evento.
+  if (maxNum != null) {
+    const sumOthers = others.reduce((acc, p) => acc + (p.max_tickets != null ? Number(p.max_tickets) : 0), 0);
+    if (sumOthers + maxNum > event.total_tickets) {
+      return res.status(422).json({
+        error: `La suma de cupos por fase (${sumOthers + maxNum}) supera el total de entradas del evento (${event.total_tickets}). `
+          + 'Reduce este cupo o amplía el total del evento.',
+      });
+    }
+  }
+
+  // Sin solapamiento entre fases ACTIVAS: la fase vigente se detecta por
+  // fecha y dos fases activas simultáneas darían precio/cupo ambiguos.
+  if (active) {
+    const overlap = others.find((p) => p.is_active
+      && new Date(p.starts_at) <= new Date(endsAt)
+      && new Date(p.ends_at) >= new Date(startsAt));
+    if (overlap) {
+      return res.status(422).json({
+        error: `Las fechas se cruzan con la fase activa "${overlap.name}". Ajusta las fechas o desactiva una de las dos.`,
+      });
+    }
+  }
+
+  // No reducir el cupo por debajo de lo ya vendido en la fase.
+  if (id && maxNum != null) {
+    const [[{ phaseSold }]] = await pool.query(
+      "SELECT COUNT(*) AS phaseSold FROM tickets WHERE sale_phase_id = ? AND status IN ('sold','used')",
+      [id]
+    );
+    if (maxNum < Number(phaseSold)) {
+      return res.status(422).json({
+        error: `Esta fase ya tiene ${phaseSold} entradas vendidas: el cupo no puede ser menor a esa cantidad.`,
+      });
+    }
+  }
+
   if (id) {
     const [result] = await pool.query(
-      `UPDATE sale_phases SET name = ?, phase_order = ?, starts_at = ?, ends_at = ?, price = ?, is_active = ?
+      `UPDATE sale_phases SET name = ?, phase_order = ?, starts_at = ?, ends_at = ?, price = ?, max_tickets = ?, is_active = ?
        WHERE id = ? AND event_id = ?`,
-      [String(name).trim(), orderNum, startsAt, endsAt, priceNum, active, id, event.id]
+      [String(name).trim(), orderNum, startsAt, endsAt, priceNum, maxNum, active, id, event.id]
     );
     if (!result.affectedRows) return res.status(404).json({ error: 'Fase no encontrada' });
-    await audit(pool, { actorId: req.user.id, action: 'phase.update', entityType: 'sale_phase', entityId: id, metadata: { name, price: priceNum } });
+    await audit(pool, { actorId: req.user.id, action: 'phase.update', entityType: 'sale_phase', entityId: id, metadata: { name, price: priceNum, max_tickets: maxNum } });
     return res.json({ ok: true, id, message: 'Fase actualizada' });
   }
 
   const phaseId = uuid();
   await pool.query(
-    `INSERT INTO sale_phases (id, event_id, name, phase_order, starts_at, ends_at, price, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [phaseId, event.id, String(name).trim(), orderNum, startsAt, endsAt, priceNum, active]
+    `INSERT INTO sale_phases (id, event_id, name, phase_order, starts_at, ends_at, price, max_tickets, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [phaseId, event.id, String(name).trim(), orderNum, startsAt, endsAt, priceNum, maxNum, active]
   );
-  await audit(pool, { actorId: req.user.id, action: 'phase.create', entityType: 'sale_phase', entityId: phaseId, metadata: { name, price: priceNum } });
+  await audit(pool, { actorId: req.user.id, action: 'phase.create', entityType: 'sale_phase', entityId: phaseId, metadata: { name, price: priceNum, max_tickets: maxNum } });
   return res.status(201).json({ ok: true, id: phaseId, message: 'Fase creada' });
 }));
 
@@ -304,7 +370,7 @@ router.get('/dashboard', ah(async (req, res) => {
     [event.id]
   );
   const [byPhase] = await pool.query(
-    `SELECT p.id, p.name, p.price,
+    `SELECT p.id, p.name, p.price, p.max_tickets, p.is_active,
             COALESCE(SUM(t.status <> 'cancelled'), 0) AS sold,
             COALESCE(SUM(IF(t.status <> 'cancelled', t.price, 0)), 0) AS revenue
      FROM sale_phases p
