@@ -1,10 +1,12 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
 const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware');
 const { ah, uuid, normalizeUsername, isValidEmail } = require('../utils');
 const { ecDayStartUtc, ecDayEndUtc, DATE_RE } = require('../time');
 const { getActiveEvent, getCurrentPhase } = require('../queries');
+const { savePaymentQr, deleteStoredFile } = require('../storage');
 const { audit } = require('../audit');
 
 const router = express.Router();
@@ -349,6 +351,136 @@ router.get('/dashboard', ah(async (req, res) => {
     },
     sellers,
     recent_validations: recentValidations,
+  });
+}));
+
+// ------------------------------------------------------------
+// Configuración de pagos / venta web (datos de transferencia que
+// ve el público en /comprar). Una fila por evento activo.
+// ------------------------------------------------------------
+const QR_IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+const qrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+});
+
+function uploadQrImage(req, res, next) {
+  qrUpload.single('qr_image')(req, res, (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(422).json({ error: 'La imagen QR de pago supera el tamaño máximo de 2 MB.' });
+      }
+      return res.status(422).json({ error: 'No se pudo procesar la imagen QR de pago.' });
+    }
+    return next();
+  });
+}
+
+router.get('/payment-settings', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.json({ settings: null, event_id: null });
+  const [rows] = await pool.query('SELECT * FROM payment_settings WHERE event_id = ?', [event.id]);
+  const s = rows[0] || null;
+  res.json({
+    event_id: event.id,
+    settings: s ? {
+      bank_name: s.bank_name,
+      account_type: s.account_type,
+      account_number: s.account_number,
+      account_holder: s.account_holder,
+      account_document: s.account_document,
+      transfer_note: s.transfer_note,
+      buyer_message: s.buyer_message,
+      public_sales_enabled: Boolean(s.public_sales_enabled),
+      has_qr_image: Boolean(s.qr_image_path),
+    } : null,
+  });
+}));
+
+router.post('/payment-settings', uploadQrImage, ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.status(409).json({ error: 'No hay evento activo configurado.' });
+
+  const body = req.body || {};
+  const clean = (v, max) => {
+    const s = String(v == null ? '' : v).trim().slice(0, max);
+    return s || null;
+  };
+  const values = {
+    bank_name: clean(body.bank_name, 120),
+    account_type: clean(body.account_type, 60),
+    account_number: clean(body.account_number, 60),
+    account_holder: clean(body.account_holder, 120),
+    account_document: clean(body.account_document, 30),
+    transfer_note: clean(body.transfer_note, 300),
+    buyer_message: clean(body.buyer_message, 500),
+  };
+  const salesEnabled = ['1', 'true', 'on'].includes(String(body.public_sales_enabled)) ? 1 : 0;
+
+  // Para habilitar la venta pública deben existir los datos mínimos
+  // de la transferencia (si no, el comprador no sabría a dónde pagar).
+  if (salesEnabled && (!values.bank_name || !values.account_number || !values.account_holder)) {
+    return res.status(422).json({
+      error: 'Para activar la venta web completa al menos banco, número de cuenta y titular.',
+    });
+  }
+
+  // Imagen QR de pago (opcional): validar firma binaria real.
+  let qrImagePath;
+  let qrImageMime;
+  if (req.file && req.file.buffer && req.file.buffer.length) {
+    const b = req.file.buffer;
+    let mime = null;
+    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) mime = 'image/jpeg';
+    else if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) mime = 'image/png';
+    else if (b.length > 12 && b.slice(0, 4).toString('ascii') === 'RIFF' && b.slice(8, 12).toString('ascii') === 'WEBP') mime = 'image/webp';
+    if (!mime || !QR_IMAGE_TYPES[mime]) {
+      return res.status(422).json({ error: 'La imagen QR de pago debe ser JPG, PNG o WEBP.' });
+    }
+    qrImagePath = await savePaymentQr(event.id, QR_IMAGE_TYPES[mime], b);
+    qrImageMime = mime;
+  }
+  const removeQr = ['1', 'true', 'on'].includes(String(body.remove_qr_image));
+
+  const [existing] = await pool.query('SELECT id, qr_image_path FROM payment_settings WHERE event_id = ?', [event.id]);
+  if (existing.length) {
+    const sets = ['bank_name = ?', 'account_type = ?', 'account_number = ?', 'account_holder = ?',
+      'account_document = ?', 'transfer_note = ?', 'buyer_message = ?', 'public_sales_enabled = ?'];
+    const params = [values.bank_name, values.account_type, values.account_number, values.account_holder,
+      values.account_document, values.transfer_note, values.buyer_message, salesEnabled];
+    if (qrImagePath) {
+      sets.push('qr_image_path = ?', 'qr_image_mime = ?');
+      params.push(qrImagePath, qrImageMime);
+    } else if (removeQr) {
+      sets.push('qr_image_path = NULL', 'qr_image_mime = NULL');
+      if (existing[0].qr_image_path) await deleteStoredFile(existing[0].qr_image_path);
+    }
+    params.push(existing[0].id);
+    await pool.query(`UPDATE payment_settings SET ${sets.join(', ')} WHERE id = ?`, params);
+  } else {
+    await pool.query(
+      `INSERT INTO payment_settings
+         (id, event_id, bank_name, account_type, account_number, account_holder, account_document,
+          transfer_note, buyer_message, public_sales_enabled, qr_image_path, qr_image_mime)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [uuid(), event.id, values.bank_name, values.account_type, values.account_number, values.account_holder,
+        values.account_document, values.transfer_note, values.buyer_message, salesEnabled,
+        qrImagePath || null, qrImageMime || null]
+    );
+  }
+
+  await audit(pool, {
+    actorId: req.user.id,
+    action: 'payment_settings.update',
+    entityType: 'payment_settings',
+    entityId: event.id,
+    metadata: { public_sales_enabled: Boolean(salesEnabled), bank_name: values.bank_name },
+  });
+  res.json({
+    ok: true,
+    message: salesEnabled
+      ? 'Configuración guardada. La venta web está ACTIVA.'
+      : 'Configuración guardada. La venta web está desactivada.',
   });
 }));
 

@@ -3,6 +3,7 @@ import { api } from '../api';
 import {
   EmptyState, Modal, Spinner, fmtMoney, toInputDate, useToast,
 } from '../components.jsx';
+import PaymentSettings from '../components/PaymentSettings.jsx';
 
 // Configuración del evento (uno activo a la vez) y sus fases de precio.
 // Las fechas se ingresan como día de Ecuador (AAAA-MM-DD); el backend las
@@ -263,6 +264,8 @@ export default function Evento() {
           ))}
         </div>
       )}
+
+      {event ? <PaymentSettings /> : null}
 
       {modal ? (
         <PhaseForm

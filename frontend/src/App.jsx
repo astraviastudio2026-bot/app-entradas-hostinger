@@ -11,6 +11,9 @@ import Tickets from './pages/Tickets.jsx';
 import TicketDetail from './pages/TicketDetail.jsx';
 import Scanner from './pages/Scanner.jsx';
 import ValidatePublic from './pages/ValidatePublic.jsx';
+import ComprasWeb from './pages/ComprasWeb.jsx';
+import Comprar from './pages/Comprar.jsx';
+import EstadoCompra from './pages/EstadoCompra.jsx';
 
 const AuthContext = createContext(null);
 export function useAuth() {
@@ -23,6 +26,7 @@ export const HOME_BY_ROLE = { admin: '/admin', seller: '/seller', validator: '/s
 const NAV_ITEMS = [
   { to: '/admin', label: 'Inicio', icon: '⌂', roles: ['admin'] },
   { to: '/seller', label: 'Vender', icon: '＋', roles: ['admin', 'seller'] },
+  { to: '/compras-web', label: 'Compras web', icon: '◈', roles: ['admin', 'seller'] },
   { to: '/entradas', label: 'Entradas', icon: '▤', roles: ['admin', 'seller'] },
   { to: '/scanner', label: 'Scanner', icon: '▣', roles: ['admin', 'validator'] },
   { to: '/usuarios', label: 'Usuarios', icon: '☺', roles: ['admin'] },
@@ -131,9 +135,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Las rutas públicas (QR, compra web, estado) nunca expulsan al login:
+    // el visitante no tiene sesión y no la necesita.
+    const PUBLIC_PREFIXES = ['/ticket/validate/', '/comprar', '/estado-compra'];
     const onUnauthorized = () => {
       setUser(null);
-      if (!window.location.pathname.startsWith('/ticket/validate/')) navigate('/login');
+      const path = window.location.pathname;
+      if (!PUBLIC_PREFIXES.some((p) => path.startsWith(p))) navigate('/login');
     };
     window.addEventListener('ff-unauthorized', onUnauthorized);
     return () => window.removeEventListener('ff-unauthorized', onUnauthorized);
@@ -164,11 +172,15 @@ export default function App() {
         <Routes>
           {/* pública: abrir el QR jamás valida la entrada */}
           <Route path="/ticket/validate/:token" element={<ValidatePublic />} />
+          {/* públicas: compra web con validación manual de pagos */}
+          <Route path="/comprar" element={<Comprar />} />
+          <Route path="/estado-compra" element={<EstadoCompra />} />
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/admin" element={<Protected roles={['admin']}><Dashboard /></Protected>} />
           <Route path="/seller" element={<Protected roles={['admin', 'seller']}><Sell /></Protected>} />
           <Route path="/vender" element={<Navigate to="/seller" replace />} />
+          <Route path="/compras-web" element={<Protected roles={['admin', 'seller']}><ComprasWeb /></Protected>} />
           <Route path="/entradas" element={<Protected roles={['admin', 'seller']}><Tickets /></Protected>} />
           <Route path="/entradas/:id" element={<Protected roles={['admin', 'seller']}><TicketDetail /></Protected>} />
           <Route path="/usuarios" element={<Protected roles={['admin']}><Users /></Protected>} />

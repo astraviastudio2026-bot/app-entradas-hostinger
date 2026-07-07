@@ -32,6 +32,8 @@ app.use('/api/auth', require('./src/routes/auth'));
 app.use('/api/admin', require('./src/routes/admin'));
 app.use('/api/tickets', require('./src/routes/tickets'));
 app.use('/api/dashboard', require('./src/routes/dashboard'));
+app.use('/api/public', require('./src/routes/public'));       // compra web pública (sin login)
+app.use('/api/purchases', require('./src/routes/purchases')); // revisión de pagos (admin/organizador)
 
 app.get('/api/health', async (req, res) => {
   try {

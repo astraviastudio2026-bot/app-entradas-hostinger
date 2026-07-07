@@ -41,6 +41,32 @@ export async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+// Envío multipart (archivos): NO fijar Content-Type, el navegador pone
+// el boundary. Usado por la compra pública y la config de pagos.
+export async function apiForm(path, formData, { method = 'POST' } = {}) {
+  let res;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method,
+      credentials: 'include',
+      body: formData,
+    });
+  } catch {
+    throw new Error('No se pudo conectar con el servidor');
+  }
+  if (res.status === 401) {
+    storeUser(null);
+    window.dispatchEvent(new Event('ff-unauthorized'));
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `Error ${res.status}`);
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
 // Descarga el PDF autenticado y dispara el guardado en el navegador.
 export async function downloadPdf(ticketId, shortCode) {
   const res = await fetch(`${API}/tickets/${ticketId}/pdf`, { credentials: 'include' });

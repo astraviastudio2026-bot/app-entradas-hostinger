@@ -149,6 +149,83 @@ CREATE TABLE IF NOT EXISTS ticket_validations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
+-- Compras web: solicitudes de compra pública (NO son entradas;
+-- la entrada real solo se crea en `tickets` al aprobar el pago)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS purchase_requests (
+  id                     CHAR(36)      NOT NULL PRIMARY KEY,
+  request_code           VARCHAR(20)   NOT NULL,                       -- "FF-WEB-000001"
+  event_id               CHAR(36)      NOT NULL,
+  buyer_name             VARCHAR(120)  NOT NULL,
+  buyer_email            VARCHAR(160)  NOT NULL,
+  buyer_phone            VARCHAR(30)   NOT NULL,
+  buyer_document         VARCHAR(30)   NULL,
+  selected_color         ENUM('verde','rojo','amarillo') NOT NULL,
+  sale_phase_id          CHAR(36)      NULL,
+  phase_name             VARCHAR(80)   NULL,
+  price                  DECIMAL(10,2) NOT NULL,                       -- precio congelado al solicitar
+  payment_proof_path     VARCHAR(255)  NOT NULL,
+  payment_proof_filename VARCHAR(160)  NOT NULL,
+  payment_proof_mime     VARCHAR(60)   NOT NULL,
+  payment_proof_hash     CHAR(64)      NOT NULL,                       -- SHA-256 del archivo (anti-duplicados)
+  status                 ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+  notes                  VARCHAR(500)  NULL,
+  rejection_reason       VARCHAR(300)  NULL,
+  approved_by            CHAR(36)      NULL,
+  approved_at            DATETIME      NULL,
+  rejected_by            CHAR(36)      NULL,
+  rejected_at            DATETIME      NULL,
+  ticket_id              CHAR(36)      NULL,
+  status_email_sent_at   DATETIME      NULL,
+  last_status_check_at   DATETIME      NULL,
+  created_at             DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at             DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_preq_code   (request_code),
+  UNIQUE KEY uq_preq_ticket (ticket_id),
+  KEY idx_preq_event  (event_id),
+  KEY idx_preq_status (status),
+  KEY idx_preq_email  (buyer_email),
+  KEY idx_preq_hash   (payment_proof_hash),
+  KEY idx_preq_created (created_at),
+  CONSTRAINT fk_preq_event    FOREIGN KEY (event_id)      REFERENCES events(id)      ON DELETE CASCADE,
+  CONSTRAINT fk_preq_phase    FOREIGN KEY (sale_phase_id) REFERENCES sale_phases(id) ON DELETE SET NULL,
+  CONSTRAINT fk_preq_ticket   FOREIGN KEY (ticket_id)     REFERENCES tickets(id)     ON DELETE SET NULL,
+  CONSTRAINT fk_preq_approver FOREIGN KEY (approved_by)   REFERENCES users(id)       ON DELETE SET NULL,
+  CONSTRAINT fk_preq_rejecter FOREIGN KEY (rejected_by)   REFERENCES users(id)       ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- Configuración de pagos / datos de transferencia por evento
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS payment_settings (
+  id                   CHAR(36)     NOT NULL PRIMARY KEY,
+  event_id             CHAR(36)     NOT NULL,
+  bank_name            VARCHAR(120) NULL,
+  account_type         VARCHAR(60)  NULL,
+  account_number       VARCHAR(60)  NULL,
+  account_holder       VARCHAR(120) NULL,
+  account_document     VARCHAR(30)  NULL,
+  transfer_note        VARCHAR(300) NULL,
+  qr_image_path        VARCHAR(255) NULL,
+  qr_image_mime        VARCHAR(60)  NULL,
+  public_sales_enabled TINYINT(1)   NOT NULL DEFAULT 0,
+  buyer_message        VARCHAR(500) NULL,
+  created_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_payset_event (event_id),
+  CONSTRAINT fk_payset_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Contador global del código de solicitud web (FF-WEB-000001, …)
+CREATE TABLE IF NOT EXISTS web_request_counter (
+  id           TINYINT NOT NULL PRIMARY KEY,   -- siempre fila 1
+  `last_value` INT     NOT NULL DEFAULT 0
+) ENGINE=InnoDB;
+INSERT INTO web_request_counter (id, `last_value`)
+SELECT 1, 0
+WHERE NOT EXISTS (SELECT 1 FROM web_request_counter WHERE id = 1);
+
+-- ------------------------------------------------------------
 -- Auditoría de acciones
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_logs (

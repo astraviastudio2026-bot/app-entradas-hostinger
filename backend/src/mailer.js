@@ -112,4 +112,4 @@ async function sendTicketEmail(ticket, pdfBuffer) {
   }
 }
 
-module.exports = { sendTicketEmail, smtpConfigured };
+module.exports = { sendTicketEmail, smtpConfigured, buildTransport };

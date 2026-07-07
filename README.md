@@ -63,6 +63,27 @@ impresa por consola) y, si no existe, el evento "FLAGS FEST" (Paradox Club, 30/0
    código manual (`FF-0001`) y un token inventado (inválido).
 5. Login `admin` → **Inicio**: revisa métricas, cupos y últimas validaciones.
 
+## Compras web (venta pública con validación manual de pagos)
+
+- **/comprar** (público, sin login): landing del evento con fase/precio/disponibilidad,
+  datos de transferencia configurados por el admin y formulario con subida de comprobante
+  (JPG/PNG/WEBP/PDF, máx. 5 MB). Al enviar se crea una **solicitud pendiente**
+  (`purchase_requests`, código `FF-WEB-000001`) y se envía un correo de confirmación
+  **sin entrada**. NUNCA se genera QR/PDF en este paso.
+- **/estado-compra** (público): consulta por **código + correo** (ambos obligatorios) y
+  opción "Olvidé mi código" (envía los códigos al correo, nunca los muestra en pantalla).
+- **Compras web** (dashboard, admin y seller): resumen, filtros, comprobante, detalle,
+  **Aprobar** (transacción con `FOR UPDATE`: revalida pendiente + disponibilidad, crea la
+  entrada real con el mismo QR/PDF/correo de una venta manual — compatible con el escáner)
+  y **Rechazar** con motivo (correo automático al comprador).
+- **Evento → Venta web** (admin): datos bancarios públicos, mensaje al comprador, imagen QR
+  de pago opcional y switch para activar/desactivar la venta pública.
+- Anti-duplicados: hash SHA-256 del comprobante (`payment_proof_hash`) + misma
+  combinación correo/evento/color/precio pendiente. Anti doble aprobación: lock de fila +
+  `ticket_id` UNIQUE.
+- Los comprobantes viven en `STORAGE_DIR/proofs/` (fuera del webroot) y solo se sirven por
+  el endpoint autenticado `GET /api/purchases/:id/proof`.
+
 ## Endpoints principales
 
 ```
@@ -71,12 +92,19 @@ Admin       GET/POST /api/admin/users · POST /api/admin/users/:id/toggle
             GET/POST /api/admin/events (un solo evento activo)
             GET/POST /api/admin/phases (fechas AAAA-MM-DD en día de Ecuador)
             GET/POST /api/admin/allocations · GET /api/admin/dashboard
+            GET/POST /api/admin/payment-settings (venta web / transferencia)
 Tickets     POST /api/tickets (venta) · GET /api/tickets · GET /api/tickets/:id
             GET /api/tickets/:id/pdf · POST /api/tickets/:id/resend · POST /api/tickets/:id/cancel
 Validación  POST /api/tickets/validate · POST /api/tickets/validate-code
             GET /api/tickets/validations
+Compras web GET /api/purchases (filtros+resumen) · GET /api/purchases/:id
+            GET /api/purchases/:id/proof · POST /api/purchases/:id/approve
+            POST /api/purchases/:id/reject   (roles: admin, seller)
+Público     GET /api/public/event · GET /api/public/payment-qr
+            POST /api/public/purchase (multipart, rate-limited)
+            POST /api/public/purchase-status · POST /api/public/recover-code
 Contexto    GET /api/dashboard (evento/fase/cupo según rol) · GET /api/health
-Público     /ticket/validate/:token (página de la SPA; nunca valida sola)
+SPA pública /comprar · /estado-compra · /ticket/validate/:token (nunca valida sola)
 ```
 
 ## Despliegue en VPS Hostinger (Ubuntu 24.04)
