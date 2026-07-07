@@ -331,7 +331,8 @@ async function generateTicketPdf(ticket) {
     }
   });
 
-  // sello derecho: intransferible + branding del estudio
+  // sello derecho: intransferible (el branding del estudio vive SOLO
+  // en la firma técnica del pie de página, una única vez)
   const stampX = tx + tw - 200;
   doc.font('Helvetica-Bold').fontSize(7.5).fillColor(color.hex, 0.95);
   doc.text('ENTRADA ÚNICA E INTRANSFERIBLE', stampX, bandY + 14, {
@@ -344,46 +345,31 @@ async function generateTicketPdf(ticket) {
     width: 184,
     align: 'right',
   });
-  doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#ffffff', 0.35);
-  doc.text('ASTRAVIA STUDIO', stampX, bandY + 42, {
-    width: 184,
-    align: 'right',
-    characterSpacing: 2,
-  });
 
-  // ---- pie de página: logo + "Desarrollado por ASTRAVIA STUDIO" ----
-  // Lockup centrado bajo el ticket (la franja inferior de la página
-  // quedaba vacía). Branding secundario: discreto, sin competir con
-  // FLAGS FEST ni acercarse al QR (que vive dentro del ticket).
+  // ---- firma técnica del pie ----
+  // Astravia Studio NO organiza el evento: solo desarrolló el sistema.
+  // Una sola línea mínima y translúcida, centrada bajo el ticket, que
+  // se lee como crédito técnico y no como sponsor u organizador.
   const logo = getAstraviaLogo();
-  const footY = bandY + bandH + 26;
+  const footY = bandY + bandH + 18;
+  const CREDIT = 'Sistema de entradas por Astravia Studio';
   doc.font('Helvetica').fontSize(6.5);
-  const smallW = doc.widthOfString('DESARROLLADO POR', { characterSpacing: 1.5 });
-  doc.font('Helvetica-Bold').fontSize(10);
-  const nameW = doc.widthOfString('ASTRAVIA STUDIO', { characterSpacing: 2.5 });
-  const textBlockW = Math.max(smallW, nameW);
+  const creditW = doc.widthOfString(CREDIT, { characterSpacing: 0.4 });
 
   if (logo) {
-    const logoSize = 40; // cuadrado: se dibuja 1:1, sin deformar
-    const gapL = 12;
-    const startX = (PAGE_W - (logoSize + gapL + textBlockW)) / 2;
+    const logoSize = 14; // mínimo: firma, no marca protagonista
+    const gapL = 6;
+    const startX = (PAGE_W - (logoSize + gapL + creditW)) / 2;
     doc.save();
-    doc.roundedRect(startX, footY, logoSize, logoSize, 9).clip();
+    doc.opacity(0.5);
+    doc.roundedRect(startX, footY, logoSize, logoSize, 4).clip();
     doc.image(logo, startX, footY, { width: logoSize, height: logoSize });
     doc.restore();
-    doc.lineWidth(0.8).strokeColor('#ffffff', 0.22).roundedRect(startX, footY, logoSize, logoSize, 9).stroke();
-
-    const textX = startX + logoSize + gapL;
-    doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.45);
-    doc.text('DESARROLLADO POR', textX, footY + 9, { characterSpacing: 1.5, lineBreak: false });
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff', 0.8);
-    doc.text('ASTRAVIA STUDIO', textX, footY + 20, { characterSpacing: 2.5, lineBreak: false });
+    doc.fillColor('#ffffff', 0.45);
+    doc.text(CREDIT, startX + logoSize + gapL, footY + 4, { characterSpacing: 0.4, lineBreak: false });
   } else {
-    // Sin logo disponible: el texto centrado ocupa el espacio igual.
-    doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.45);
-    doc.text('DESARROLLADO POR', 0, footY + 9, { width: PAGE_W, align: 'center', characterSpacing: 1.5 });
-    doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff', 0.8);
-    doc.text('ASTRAVIA STUDIO', 0, footY + 20, { width: PAGE_W, align: 'center', characterSpacing: 2.5 });
+    doc.fillColor('#ffffff', 0.45);
+    doc.text(CREDIT, 0, footY + 4, { width: PAGE_W, align: 'center', characterSpacing: 0.4 });
   }
 
   doc.end();
