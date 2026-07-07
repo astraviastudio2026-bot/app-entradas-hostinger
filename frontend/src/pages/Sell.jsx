@@ -3,11 +3,15 @@ import { Link } from 'react-router-dom';
 import { api, downloadPdf } from '../api';
 import { useAuth } from '../App.jsx';
 import {
-  ColorBadge, StatusBadge, TICKET_COLORS, fmtDate, fmtMoney, useToast,
+  ColorBadge, StatusBadge, TICKET_COLORS, fmtDate, fmtDateOnly, fmtMoney, useToast,
 } from '../components.jsx';
+import TicketPreview from '../components/TicketPreview.jsx';
 
-// Página de venta (inicio del vendedor): cupo, fase vigente y precio,
-// formulario de venta y sus últimas entradas con PDF / reenviar.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// Página de venta (inicio del vendedor): formulario a la izquierda y
+// vista previa de la entrada en tiempo real a la derecha (una columna
+// en móvil). Mantiene cupo, fase, precio y últimas ventas.
 export default function Sell() {
   const { user } = useAuth();
   const toast = useToast();
@@ -31,17 +35,31 @@ export default function Sell() {
 
   const isSeller = user.role === 'seller';
   const phase = ctx?.phase || null;
+  const event = ctx?.event || null;
   const noEvent = ctxLoaded && (!ctx || !ctx.event);
   const remaining = ctx
     ? (isSeller ? Math.min(ctx.my_remaining ?? 0, ctx.global_available) : ctx.global_available)
     : null;
   const noAllocation = isSeller && ctx && ctx.quota === null;
 
+  const eventDateText = event ? fmtDateOnly(event.event_date) : '';
+
   const submit = async (e) => {
     e.preventDefault();
+    if (busy) return; // evita doble clic / venta duplicada
     setError('');
+
+    const name = customerName.trim();
+    if (name.length < 3) {
+      setError('Escribe el nombre completo del cliente (mínimo 3 caracteres).');
+      return;
+    }
+    if (!EMAIL_RE.test(customerEmail.trim())) {
+      setError('El correo del cliente no es válido. Revisa que tenga el formato nombre@dominio.com.');
+      return;
+    }
     if (!color) {
-      setError('Selecciona el color elegido por el cliente');
+      setError('Selecciona el color elegido por el cliente.');
       return;
     }
     setBusy(true);
@@ -49,8 +67,8 @@ export default function Sell() {
       const data = await api('/tickets', {
         method: 'POST',
         body: {
-          customer_name: customerName,
-          customer_email: customerEmail,
+          customer_name: name,
+          customer_email: customerEmail.trim(),
           selected_color: color,
           notes: notes.trim() || undefined,
         },
@@ -92,6 +110,18 @@ export default function Sell() {
           <div className="sold-check">✓</div>
           <h2>¡Entrada vendida!</h2>
           <div className="sold-code">{t.short_code}</div>
+          <div className="sold-ticket">
+            <TicketPreview
+              color={t.selected_color}
+              name={t.customer_name}
+              number={t.ticket_number}
+              code={t.short_code}
+              eventName={t.event?.name || event?.name}
+              eventDate={fmtDateOnly(t.event?.event_date || event?.event_date)}
+              eventLocation={t.event?.location || event?.location}
+              generated
+            />
+          </div>
           <div className="sold-meta">
             <span>{t.customer_name}</span>
             <span>{t.customer_email}</span>
@@ -119,7 +149,8 @@ export default function Sell() {
     );
   }
 
-  const sellDisabled = busy || !phase || noEvent || noAllocation || (remaining !== null && remaining <= 0);
+  const soldOut = remaining !== null && remaining <= 0;
+  const sellDisabled = busy || !phase || noEvent || noAllocation || soldOut;
 
   return (
     <div className="page">
@@ -140,77 +171,118 @@ export default function Sell() {
       </div>
 
       {noAllocation ? (
-        <div className="panel form-warning" style={{ marginBottom: 16 }}>
+        <div className="panel form-warning" style={{ marginBottom: 0 }}>
           No tienes un cupo de entradas asignado para este evento. Pídele al administrador que te asigne uno.
         </div>
       ) : null}
+      {soldOut && !noAllocation && ctxLoaded && !noEvent ? (
+        <div className="panel form-warning" style={{ marginBottom: 0 }}>
+          {isSeller ? 'Ya usaste todo tu cupo de entradas.' : 'Ya se vendieron todas las entradas disponibles.'}
+        </div>
+      ) : null}
 
-      <form onSubmit={submit} className="sell-form panel">
-        <div className="form-row">
+      <div className="sell-layout">
+        <form onSubmit={submit} className="sell-form panel">
+          <div className="form-row">
+            <label className="field">
+              <span>Nombre del cliente *</span>
+              <input
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="Nombre y apellido"
+                minLength={3}
+                maxLength={120}
+                autoComplete="off"
+                required
+              />
+            </label>
+            <label className="field">
+              <span>Correo del cliente *</span>
+              <input
+                type="email"
+                value={customerEmail}
+                onChange={(e) => setCustomerEmail(e.target.value)}
+                placeholder="cliente@correo.com"
+                maxLength={160}
+                autoComplete="off"
+                required
+              />
+            </label>
+          </div>
+
+          <span className="field-label">Color elegido por el cliente *</span>
+          <div className="color-picker">
+            {Object.values(TICKET_COLORS).map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                className={`color-option${color === c.key ? ' selected' : ''}`}
+                style={{ '--opt-color': c.hex }}
+                onClick={() => setColor(c.key)}
+              >
+                <span className="opt-dot" />
+                <span className="opt-label">{c.label}</span>
+                <span className="opt-concept">{c.concept}</span>
+                <span className="opt-desc">{c.description}</span>
+              </button>
+            ))}
+          </div>
+          <p className="color-tagline">“Elige tu color, vive la noche”</p>
+
           <label className="field">
-            <span>Nombre del cliente *</span>
+            <span>Observación (opcional)</span>
             <input
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Nombre y apellido"
-              minLength={3}
-              maxLength={120}
-              required
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Ej. pagó por transferencia"
+              maxLength={500}
             />
           </label>
-          <label className="field">
-            <span>Correo del cliente *</span>
-            <input
-              type="email"
-              value={customerEmail}
-              onChange={(e) => setCustomerEmail(e.target.value)}
-              placeholder="cliente@correo.com"
-              maxLength={160}
-              required
-            />
-          </label>
-        </div>
 
-        <span className="field-label">Color elegido por el cliente *</span>
-        <div className="color-picker">
-          {Object.values(TICKET_COLORS).map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              className={`color-option${color === c.key ? ' selected' : ''}`}
-              style={{ '--opt-color': c.hex }}
-              onClick={() => setColor(c.key)}
-            >
-              <span className="opt-dot" />
-              <span className="opt-label">{c.label}</span>
-              <span className="opt-concept">{c.concept}</span>
-              <span className="opt-desc">{c.description}</span>
-            </button>
-          ))}
-        </div>
-        <p className="color-tagline">“Elige tu color, vive la noche”</p>
+          {error ? <div className="form-error">{error}</div> : null}
 
-        <label className="field">
-          <span>Observación (opcional)</span>
-          <input
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Ej. pagó por transferencia"
-            maxLength={500}
+          <button type="submit" className="btn btn-primary btn-lg btn-block" disabled={sellDisabled}>
+            {busy ? (
+              <>
+                <span className="btn-spinner" aria-hidden="true" />
+                Generando entrada…
+              </>
+            ) : soldOut ? 'Sin cupo disponible'
+              : 'REGISTRAR VENTA Y ENVIAR ENTRADA'}
+          </button>
+          <p className="form-note">
+            Al registrar la venta se genera el QR único y se envía el PDF al correo del cliente automáticamente.
+          </p>
+        </form>
+
+        <aside className="sell-preview">
+          <h3>Vista previa de la entrada</h3>
+          <TicketPreview
+            color={color}
+            name={customerName}
+            number={ctx?.next_ticket_number}
+            eventName={event?.name}
+            eventDate={eventDateText}
+            eventLocation={event?.location}
           />
-        </label>
-
-        {error ? <div className="form-error">{error}</div> : null}
-
-        <button type="submit" className="btn btn-primary btn-lg btn-block" disabled={sellDisabled}>
-          {busy ? 'Registrando…'
-            : remaining !== null && remaining <= 0 ? 'Sin cupo disponible'
-              : 'Registrar venta y enviar entrada'}
-        </button>
-        <p className="form-note">
-          Al registrar la venta se genera el QR único y se envía el PDF al correo del cliente automáticamente.
-        </p>
-      </form>
+          <div className="preview-chips">
+            {phase ? (
+              <span className="preview-chip">
+                {phase.name} · <strong>{fmtMoney(phase.price)}</strong>
+              </span>
+            ) : null}
+            {remaining !== null ? (
+              <span className="preview-chip">
+                {isSeller ? 'Tu cupo restante' : 'Disponibles'}: <strong>{remaining}</strong>
+              </span>
+            ) : null}
+          </div>
+          <p className="preview-note">
+            El QR mostrado es una muestra. El QR real y único se genera al registrar
+            la venta y viaja en el PDF que recibe el cliente.
+          </p>
+        </aside>
+      </div>
 
       <div className="panel">
         <div className="panel-head">

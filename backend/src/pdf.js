@@ -243,10 +243,16 @@ async function generateTicketPdf(ticket) {
     align: 'center',
     characterSpacing: 4,
   });
-  doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.6);
-  doc.text('Escanear en el ingreso', qrX - 26, qrY + qrSize + 36, {
+  doc.font('Helvetica').fontSize(6).fillColor('#ffffff', 0.65);
+  doc.text('PRESENTAR ESTE CÓDIGO QR', qrX - 26, qrY + qrSize + 36, {
     width: qrSize + 52,
     align: 'center',
+    characterSpacing: 0.4,
+  });
+  doc.text('EL DÍA DEL EVENTO', qrX - 26, qrY + qrSize + 45, {
+    width: qrSize + 52,
+    align: 'center',
+    characterSpacing: 0.4,
   });
 
   doc.restore(); // fin clip del ticket

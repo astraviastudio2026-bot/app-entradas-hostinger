@@ -8,14 +8,51 @@ const RESULT_STYLES = {
   already_used: { icon: '✕', title: 'YA FUE USADA', className: 'scan-used' },
   cancelled: { icon: '⊘', title: 'ENTRADA ANULADA', className: 'scan-cancelled' },
   invalid: { icon: '?', title: 'QR INVÁLIDO', className: 'scan-invalid' },
+  error: { icon: '⚠', title: 'ERROR DE CONEXIÓN', className: 'scan-error' },
 };
+
+// Ventana en la que se ignora el mismo QR (evita validar dos veces la
+// misma entrada por lecturas consecutivas de la cámara).
+const DUPLICATE_MS = 4000;
+
+// El recuadro de lectura se adapta al tamaño real del visor del móvil.
+function qrboxSize(viewfinderWidth, viewfinderHeight) {
+  const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.72);
+  return { width: Math.max(size, 160), height: Math.max(size, 160) };
+}
+
+// Mensaje claro según el motivo por el que no arrancó la cámara.
+function cameraErrorMessage(err) {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    return 'Este navegador no soporta el acceso a la cámara. Usa Chrome (Android) o Safari (iPhone) actualizados, o valida por código manual.';
+  }
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    return 'La cámara solo funciona con conexión segura (HTTPS). Abre la app desde el dominio oficial.';
+  }
+  const name = err?.name || '';
+  const text = String(err?.message || err || '');
+  if (name === 'NotAllowedError' || /denied|permission/i.test(text)) {
+    return 'Permiso de cámara denegado. Actívalo en los ajustes del navegador (candado junto a la dirección) y vuelve a intentar.';
+  }
+  if (name === 'NotFoundError' || /no.*camera|not found/i.test(text)) {
+    return 'No se encontró ninguna cámara en este dispositivo. Usa la validación por código manual.';
+  }
+  if (name === 'NotReadableError' || /in use|could not start/i.test(text)) {
+    return 'La cámara está siendo usada por otra aplicación. Ciérrala y vuelve a intentar.';
+  }
+  return 'No se pudo iniciar la cámara. Revisa los permisos del navegador o usa la validación por código manual.';
+}
 
 export default function Scanner() {
   const toast = useToast();
   const scannerRef = useRef(null);
   const busyRef = useRef(false);
+  const lastScanRef = useRef({ text: '', at: 0 });
+  const audioRef = useRef(null);
   const [running, setRunning] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [cameraError, setCameraError] = useState('');
   const [result, setResult] = useState(null);
   const [manual, setManual] = useState('');
   const [history, setHistory] = useState([]);
@@ -24,6 +61,28 @@ export default function Scanner() {
     api('/tickets/validations').then((d) => setHistory(d.validations)).catch(() => {});
   };
   useEffect(loadHistory, []);
+
+  // Pitido de confirmación (WebAudio). El contexto se crea en el gesto
+  // de "Iniciar cámara" para cumplir las políticas de iOS/Android.
+  const beep = (ok) => {
+    try {
+      const ctx = audioRef.current;
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume();
+      const notes = ok ? [[880, 0, 0.12]] : [[240, 0, 0.1], [240, 0.16, 0.1]];
+      notes.forEach(([freq, delay, dur]) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.value = freq;
+        osc.type = 'square';
+        gain.gain.setValueAtTime(0.08, ctx.currentTime + delay);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + dur);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + dur);
+      });
+    } catch { /* sin audio, no pasa nada */ }
+  };
 
   // Tras cada lectura el escáner queda en pausa: nunca se valida en bucle.
   const pauseCamera = () => {
@@ -49,29 +108,64 @@ export default function Scanner() {
       const data = await api(path, { method: 'POST', body });
       setResult(data);
       loadHistory();
-      if (navigator.vibrate) navigator.vibrate(data.status === 'valid' ? 100 : [80, 60, 80]);
+      const ok = data.status === 'valid';
+      beep(ok);
+      if (navigator.vibrate) navigator.vibrate(ok ? 120 : [90, 60, 90, 60, 90]);
     } catch (err) {
-      toast(err.message, 'error');
+      // Falla de red/servidor: tarjeta clara con opción de reintentar.
+      setResult({ status: 'error', message: err.message });
+      beep(false);
+      if (navigator.vibrate) navigator.vibrate([90, 60, 90]);
     } finally {
       busyRef.current = false;
     }
   };
 
+  const onScan = (decodedText) => {
+    const text = decodedText.trim();
+    const now = Date.now();
+    const last = lastScanRef.current;
+    if (text === last.text && now - last.at < DUPLICATE_MS) return;
+    lastScanRef.current = { text, at: now };
+    validate('/tickets/validate', { scannedValue: text, source: 'scanner' });
+  };
+
   const start = async () => {
+    if (starting || running) return;
     setResult(null);
+    setCameraError('');
+    setStarting(true);
+    if (!audioRef.current) {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (Ctx) audioRef.current = new Ctx();
+      } catch { /* sin audio */ }
+    }
+    const config = {
+      fps: 10,
+      qrbox: qrboxSize,
+      // iOS Safari exige estos atributos para reproducir video inline.
+      videoConstraints: { facingMode: 'environment' },
+    };
     try {
       const scanner = new Html5Qrcode('qr-reader');
       scannerRef.current = scanner;
-      await scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 230, height: 230 } },
-        (decodedText) => validate('/tickets/validate', { scannedValue: decodedText.trim(), source: 'scanner' }),
-        () => {}
-      );
+      try {
+        // Cámara trasera por defecto en móviles.
+        await scanner.start({ facingMode: 'environment' }, config, onScan, () => {});
+      } catch (err) {
+        // Sin cámara trasera (PC/tablets): usar cualquier cámara disponible.
+        const cams = await Html5Qrcode.getCameras();
+        if (!cams || !cams.length) throw err;
+        await scanner.start(cams[0].id, { fps: 10, qrbox: qrboxSize }, onScan, () => {});
+      }
       setRunning(true);
       setPaused(false);
-    } catch {
-      toast('No se pudo iniciar la cámara. Revisa los permisos del navegador (requiere HTTPS).', 'error');
+    } catch (err) {
+      scannerRef.current = null;
+      setCameraError(cameraErrorMessage(err));
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -93,6 +187,9 @@ export default function Scanner() {
     if (scannerRef.current) {
       scannerRef.current.stop().catch(() => {});
     }
+    if (audioRef.current) {
+      audioRef.current.close().catch(() => {});
+    }
   }, []);
 
   const submitManual = (e) => {
@@ -108,7 +205,7 @@ export default function Scanner() {
     }
   };
 
-  const style = result ? RESULT_STYLES[result.status] : null;
+  const style = result ? RESULT_STYLES[result.status] || RESULT_STYLES.invalid : null;
   const tkColor = result?.ticket ? TICKET_COLORS[result.ticket.selected_color] : null;
 
   return (
@@ -126,13 +223,14 @@ export default function Scanner() {
           {!running ? (
             <div className="scanner-placeholder">
               <span className="scanner-icon">▣</span>
-              <p>La cámara está apagada</p>
+              <p>{starting ? 'Iniciando cámara…' : 'La cámara está apagada'}</p>
             </div>
           ) : null}
+          {cameraError ? <div className="form-error">{cameraError}</div> : null}
           <div className="scanner-controls">
             {!running ? (
-              <button type="button" className="btn btn-primary btn-block" onClick={start}>
-                Iniciar cámara
+              <button type="button" className="btn btn-primary btn-block btn-lg" onClick={start} disabled={starting}>
+                {starting ? 'Iniciando…' : cameraError ? 'Reintentar cámara' : 'Iniciar cámara'}
               </button>
             ) : (
               <button type="button" className="btn btn-danger btn-block" onClick={stop}>
@@ -145,6 +243,8 @@ export default function Scanner() {
               value={manual}
               onChange={(e) => setManual(e.target.value)}
               placeholder="Validar por código: FF-0001"
+              autoComplete="off"
+              autoCapitalize="characters"
             />
             <button type="submit" className="btn btn-ghost">Validar</button>
           </form>
@@ -178,7 +278,7 @@ export default function Scanner() {
               ) : null}
               <p className="scan-message">{result.message}</p>
               {running && paused ? (
-                <button type="button" className="btn btn-primary btn-block" onClick={resumeCamera}>
+                <button type="button" className="btn btn-primary btn-block btn-lg" onClick={resumeCamera}>
                   Escanear siguiente
                 </button>
               ) : null}

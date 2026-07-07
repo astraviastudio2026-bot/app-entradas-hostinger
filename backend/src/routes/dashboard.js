@@ -21,6 +21,12 @@ router.get('/', ah(async (req, res) => {
     "SELECT COUNT(*) AS globalSold FROM tickets WHERE event_id = ? AND status <> 'cancelled'",
     [event.id]
   );
+  // Correlativo estimado para la vista previa del ticket (el definitivo
+  // lo asigna la transacción de venta; las anuladas conservan su número).
+  const [[{ maxNum }]] = await pool.query(
+    'SELECT COALESCE(MAX(ticket_number), 0) AS maxNum FROM tickets WHERE event_id = ?',
+    [event.id]
+  );
   const base = {
     event: {
       id: event.id,
@@ -32,6 +38,7 @@ router.get('/', ah(async (req, res) => {
     phase: phase ? { id: phase.id, name: phase.name, price: phase.price, ends_at: phase.ends_at } : null,
     global_sold: Number(globalSold) || 0,
     global_available: Math.max(0, event.total_tickets - (Number(globalSold) || 0)),
+    next_ticket_number: (Number(maxNum) || 0) + 1,
     role: req.user.role,
   };
 

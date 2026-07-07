@@ -7,21 +7,33 @@ export const TICKET_COLORS = {
     label: 'Verde',
     concept: 'Soltero/a',
     description: 'Abierto/a a conocer a alguien especial',
+    phrase: 'Elige tu color, vive la noche.',
     hex: '#2fd956',
+    soft: '#8affa8',
+    darkBg: '#04170a',
+    midBg: '#0b3d1a',
   },
   rojo: {
     key: 'rojo',
     label: 'Rojo',
     concept: 'No busco nada',
     description: 'Disfruto la noche, sin etiquetas',
+    phrase: 'Sin etiquetas, solo disfruta.',
     hex: '#ff4040',
+    soft: '#ff9d9d',
+    darkBg: '#1b0404',
+    midBg: '#521010',
   },
   amarillo: {
     key: 'amarillo',
     label: 'Amarillo',
     concept: 'Depende',
     description: 'Todo puede pasar, déjate llevar',
+    phrase: 'Todo puede pasar.',
     hex: '#ffc61a',
+    soft: '#ffe38f',
+    darkBg: '#191204',
+    midBg: '#584108',
   },
 };
 
@@ -46,6 +58,15 @@ export function fmtDate(value, { withTime = true } = {}) {
   const opts = { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', year: 'numeric' };
   if (withTime) Object.assign(opts, { hour: '2-digit', minute: '2-digit', hour12: false });
   return d.toLocaleString('es-EC', opts);
+}
+
+// Fecha del evento (columna DATE, sin hora real) -> dd/mm/aaaa SIN conversión
+// de zona horaria (espejo de formatDateOnly del backend: así el ticket en
+// pantalla muestra el mismo día que el PDF).
+export function fmtDateOnly(value) {
+  if (!value) return '';
+  const m = String(value instanceof Date ? value.toISOString() : value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : fmtDate(value, { withTime: false });
 }
 
 // Fecha UTC -> 'YYYY-MM-DD' del día correspondiente en Ecuador
