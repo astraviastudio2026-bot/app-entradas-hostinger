@@ -1,7 +1,34 @@
+const fs = require('fs');
+const path = require('path');
 const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
 const { COLOR_INFO, TAGLINE, CURRENCY } = require('./colors');
 const { formatEc, formatDateOnly } = require('./time');
+
+// Logo de ASTRAVIA STUDIO (branding secundario del pie de página).
+// Se busca en rutas conocidas para que funcione igual en el Codespace y
+// en Hostinger (el backend siempre lee su propia copia en backend/assets;
+// las demás son respaldos). Si no aparece, el PDF SE GENERA IGUAL sin
+// logo y se deja una advertencia en el log: nunca rompe una venta.
+let astraviaLogo; // undefined = aún no buscado; null = no disponible
+function getAstraviaLogo() {
+  if (astraviaLogo !== undefined) return astraviaLogo;
+  const candidates = [
+    process.env.ASTRAVIA_LOGO_PATH,
+    path.join(__dirname, '..', 'assets', 'astravia-logo.jpg'),
+    path.join(__dirname, '..', '..', 'assets', 'referencias', 'astravia-logo.jpg'),
+    path.join(__dirname, '..', '..', 'frontend', 'public', 'astravia-logo.jpg'),
+  ].filter(Boolean);
+  for (const file of candidates) {
+    try {
+      astraviaLogo = fs.readFileSync(file);
+      return astraviaLogo;
+    } catch { /* probar la siguiente ruta */ }
+  }
+  astraviaLogo = null;
+  console.warn('AVISO: no se encontró backend/assets/astravia-logo.jpg; el PDF se genera sin el logo del estudio.');
+  return astraviaLogo;
+}
 
 // Entrada en A4 horizontal, estética nightclub, inspirada en
 // assets/referencias/formato-entrada.png: franja tipo pulsera con muescas
@@ -323,6 +350,41 @@ async function generateTicketPdf(ticket) {
     align: 'right',
     characterSpacing: 2,
   });
+
+  // ---- pie de página: logo + "Desarrollado por ASTRAVIA STUDIO" ----
+  // Lockup centrado bajo el ticket (la franja inferior de la página
+  // quedaba vacía). Branding secundario: discreto, sin competir con
+  // FLAGS FEST ni acercarse al QR (que vive dentro del ticket).
+  const logo = getAstraviaLogo();
+  const footY = bandY + bandH + 26;
+  doc.font('Helvetica').fontSize(6.5);
+  const smallW = doc.widthOfString('DESARROLLADO POR', { characterSpacing: 1.5 });
+  doc.font('Helvetica-Bold').fontSize(10);
+  const nameW = doc.widthOfString('ASTRAVIA STUDIO', { characterSpacing: 2.5 });
+  const textBlockW = Math.max(smallW, nameW);
+
+  if (logo) {
+    const logoSize = 40; // cuadrado: se dibuja 1:1, sin deformar
+    const gapL = 12;
+    const startX = (PAGE_W - (logoSize + gapL + textBlockW)) / 2;
+    doc.save();
+    doc.roundedRect(startX, footY, logoSize, logoSize, 9).clip();
+    doc.image(logo, startX, footY, { width: logoSize, height: logoSize });
+    doc.restore();
+    doc.lineWidth(0.8).strokeColor('#ffffff', 0.22).roundedRect(startX, footY, logoSize, logoSize, 9).stroke();
+
+    const textX = startX + logoSize + gapL;
+    doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.45);
+    doc.text('DESARROLLADO POR', textX, footY + 9, { characterSpacing: 1.5, lineBreak: false });
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff', 0.8);
+    doc.text('ASTRAVIA STUDIO', textX, footY + 20, { characterSpacing: 2.5, lineBreak: false });
+  } else {
+    // Sin logo disponible: el texto centrado ocupa el espacio igual.
+    doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.45);
+    doc.text('DESARROLLADO POR', 0, footY + 9, { width: PAGE_W, align: 'center', characterSpacing: 1.5 });
+    doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff', 0.8);
+    doc.text('ASTRAVIA STUDIO', 0, footY + 20, { width: PAGE_W, align: 'center', characterSpacing: 2.5 });
+  }
 
   doc.end();
   return done;

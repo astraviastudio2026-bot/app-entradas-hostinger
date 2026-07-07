@@ -21,14 +21,27 @@ CREATE TABLE IF NOT EXISTS users (
   id            CHAR(36)     NOT NULL PRIMARY KEY,          -- UUID generado en Node
   full_name     VARCHAR(120) NOT NULL,
   username      VARCHAR(60)  NOT NULL,                      -- usuario interno de login, minúsculas
-  email         VARCHAR(160) NULL,                          -- opcional/informativo
+  email         VARCHAR(160) NULL,                          -- correo vinculado (opcional; único, lo valida el backend)
   password_hash VARCHAR(100) NOT NULL,                      -- bcrypt (cost 10-12)
   role          ENUM('admin','seller','validator') NOT NULL,
   is_active     TINYINT(1)   NOT NULL DEFAULT 1,
+  -- Seguridad de la cuenta: verificación de correo, recuperación de
+  -- contraseña y bloqueo temporal por intentos fallidos. Los tokens
+  -- NUNCA se guardan en claro: solo su SHA-256 en hex.
+  email_verified_at             DATETIME    NULL,
+  email_verification_token      CHAR(64)    NULL,           -- SHA-256 del token enviado por correo
+  email_verification_expires_at DATETIME    NULL,
+  password_reset_token          CHAR(64)    NULL,           -- SHA-256 del token de recuperación
+  password_reset_expires_at     DATETIME    NULL,
+  last_login_at                 DATETIME    NULL,
+  last_login_ip                 VARCHAR(45) NULL,           -- IPv4 o IPv6
+  failed_login_attempts         INT         NOT NULL DEFAULT 0,
+  locked_until                  DATETIME    NULL,           -- bloqueo temporal tras varios intentos fallidos
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uq_users_username (username),
-  KEY idx_users_role (role)
+  KEY idx_users_role (role),
+  KEY idx_users_email (email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------

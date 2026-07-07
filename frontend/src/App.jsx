@@ -15,6 +15,9 @@ import ValidatePublic from './pages/ValidatePublic.jsx';
 import ComprasWeb from './pages/ComprasWeb.jsx';
 import Comprar from './pages/Comprar.jsx';
 import EstadoCompra from './pages/EstadoCompra.jsx';
+import RecuperarContrasena from './pages/RecuperarContrasena.jsx';
+import RestablecerContrasena from './pages/RestablecerContrasena.jsx';
+import VerificarCorreo from './pages/VerificarCorreo.jsx';
 
 const AuthContext = createContext(null);
 export function useAuth() {
@@ -150,7 +153,10 @@ export default function App() {
   useEffect(() => {
     // Las rutas públicas (QR, compra web, estado) nunca expulsan al login:
     // el visitante no tiene sesión y no la necesita.
-    const PUBLIC_PREFIXES = ['/ticket/validate/', '/comprar', '/estado-compra'];
+    const PUBLIC_PREFIXES = [
+      '/ticket/validate/', '/comprar', '/estado-compra',
+      '/recuperar-contrasena', '/restablecer-contrasena', '/verificar-correo',
+    ];
     const onUnauthorized = () => {
       setUser(null);
       const path = window.location.pathname;
@@ -189,6 +195,11 @@ export default function App() {
           <Route path="/comprar" element={<Comprar />} />
           <Route path="/estado-compra" element={<EstadoCompra />} />
           <Route path="/login" element={<Login />} />
+          {/* públicas: recuperación de contraseña y verificación del correo
+              de usuarios internos (se llega desde el enlace del correo) */}
+          <Route path="/recuperar-contrasena" element={<RecuperarContrasena />} />
+          <Route path="/restablecer-contrasena" element={<RestablecerContrasena />} />
+          <Route path="/verificar-correo" element={<VerificarCorreo />} />
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/admin" element={<Protected roles={['admin']}><Dashboard /></Protected>} />
           <Route path="/seller" element={<Protected roles={['admin', 'seller']}><Sell /></Protected>} />

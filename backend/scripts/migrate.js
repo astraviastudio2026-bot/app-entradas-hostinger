@@ -65,6 +65,16 @@ async function main() {
 
   // Columnas nuevas sobre tablas ya existentes (CREATE TABLE IF NOT
   // EXISTS no las agrega). Idempotente: solo si falta la columna.
+  await ensureColumn(conn, 'users', 'email_verified_at', 'DATETIME NULL AFTER is_active');
+  await ensureColumn(conn, 'users', 'email_verification_token', 'CHAR(64) NULL AFTER email_verified_at');
+  await ensureColumn(conn, 'users', 'email_verification_expires_at', 'DATETIME NULL AFTER email_verification_token');
+  await ensureColumn(conn, 'users', 'password_reset_token', 'CHAR(64) NULL AFTER email_verification_expires_at');
+  await ensureColumn(conn, 'users', 'password_reset_expires_at', 'DATETIME NULL AFTER password_reset_token');
+  await ensureColumn(conn, 'users', 'last_login_at', 'DATETIME NULL AFTER password_reset_expires_at');
+  await ensureColumn(conn, 'users', 'last_login_ip', 'VARCHAR(45) NULL AFTER last_login_at');
+  await ensureColumn(conn, 'users', 'failed_login_attempts', 'INT NOT NULL DEFAULT 0 AFTER last_login_ip');
+  await ensureColumn(conn, 'users', 'locked_until', 'DATETIME NULL AFTER failed_login_attempts');
+  await ensureIndex(conn, 'users', 'idx_users_email', '(email)');
   await ensureColumn(conn, 'sale_phases', 'max_tickets', 'INT NULL AFTER price');
   await ensureColumn(conn, 'tickets', 'customer_document', 'VARCHAR(30) NULL AFTER customer_email');
   await ensureColumn(conn, 'tickets', 'customer_phone', 'VARCHAR(30) NULL AFTER customer_document');
@@ -114,6 +124,18 @@ async function ensureColumn(conn, table, column, definition) {
   if (!cols.length) {
     console.log(`  agregando columna ${table}.${column}…`);
     await conn.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`);
+  }
+}
+
+async function ensureIndex(conn, table, indexName, definition) {
+  const [idx] = await conn.query(
+    `SELECT 1 FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
+    [table, indexName]
+  );
+  if (!idx.length) {
+    console.log(`  agregando índice ${table}.${indexName}…`);
+    await conn.query(`ALTER TABLE \`${table}\` ADD INDEX \`${indexName}\` ${definition}`);
   }
 }
 

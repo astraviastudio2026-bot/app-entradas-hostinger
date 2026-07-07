@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth, HOME_BY_ROLE } from '../App.jsx';
 
 export default function Login() {
@@ -42,12 +42,12 @@ export default function Login() {
 
         <form onSubmit={submit} className="login-form">
           <label className="field">
-            <span>Usuario</span>
+            <span>Usuario o correo</span>
             <input
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="vendedor1"
+              placeholder="vendedor1 o correo@ejemplo.com"
               autoComplete="username"
               autoCapitalize="none"
               required
@@ -68,6 +68,9 @@ export default function Login() {
           <button type="submit" className="btn btn-primary btn-block" disabled={busy}>
             {busy ? 'Ingresando…' : 'Ingresar'}
           </button>
+          <Link to="/recuperar-contrasena" className="login-forgot">
+            Olvidé mi contraseña
+          </Link>
         </form>
 
         <div className="login-footer">

@@ -17,6 +17,7 @@ const { ah, uuid, isValidEmail, COLORS } = require('../utils');
 const { getActiveEvent, resolveCurrentPhase, getActivePaymentMethods } = require('../queries');
 const { saveProofFile, readStoredFile, deleteStoredFile } = require('../storage');
 const { sendRequestReceivedEmail, sendCodeRecoveryEmail } = require('../webMailer');
+const { sendNewPurchaseAdminEmail, purchaseEmailNotificationsEnabled } = require('../userMailer');
 const { audit } = require('../audit');
 
 const router = express.Router();
@@ -344,6 +345,30 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
     );
   } catch (err) {
     console.error('No se pudo crear la notificación interna:', err.message);
+  }
+
+  // Aviso OPCIONAL por correo a admins con correo verificado (apagado
+  // por defecto; NOTIFY_PURCHASE_BY_EMAIL=1 lo activa). Complementa la
+  // campana; si falla, no afecta la solicitud.
+  if (purchaseEmailNotificationsEnabled()) {
+    try {
+      const FLAG_LABELS = { verde: 'Green Flag', rojo: 'Red Flag', amarillo: 'Yellow Flag' };
+      const [admins] = await pool.query(
+        "SELECT email FROM users WHERE role = 'admin' AND is_active = 1 AND email IS NOT NULL AND email_verified_at IS NOT NULL"
+      );
+      if (admins.length) {
+        await sendNewPurchaseAdminEmail(admins.map((a) => a.email), {
+          request_code: requestCode,
+          buyer_name: buyerName,
+          flag_label: FLAG_LABELS[color] || color,
+          price: phase.price,
+          phase_name: phase.name,
+          bank_name: method.bank_name,
+        });
+      }
+    } catch (err) {
+      console.error('No se pudo enviar el aviso de compra a admins:', err.message);
+    }
   }
 
   // Correo de confirmación (sin PDF, sin QR). Si falla, la solicitud

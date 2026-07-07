@@ -3,16 +3,43 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware');
-const { ah, uuid, normalizeUsername, isValidEmail } = require('../utils');
-const { ecDayStartUtc, ecDayEndUtc, DATE_RE } = require('../time');
+const {
+  ah, uuid, normalizeUsername, isValidEmail, newSecurityToken, hashSecurityToken,
+} = require('../utils');
+const { ecDayStartUtc, ecDayEndUtc, DATE_RE, toMysqlUtc } = require('../time');
 const { getActiveEvent, getCurrentPhase } = require('../queries');
 const { savePaymentMethodQr, deleteStoredFile, readStoredFile } = require('../storage');
 const { audit } = require('../audit');
+const { sendEmailVerificationEmail } = require('../userMailer');
 
 const router = express.Router();
 router.use(requireAuth, requireRole('admin'));
 
 const ROLES = ['admin', 'seller', 'validator'];
+const VERIFICATION_HOURS = 24;
+
+// El correo vinculado debe ser único entre usuarios internos.
+// (excludeId: al editar, no chocar contra uno mismo)
+async function emailInUse(email, excludeId = null) {
+  const [rows] = await pool.query(
+    'SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1',
+    [email, excludeId || '']
+  );
+  return rows.length > 0;
+}
+
+// Genera un token nuevo de verificación (24 h, un solo uso; en BD solo
+// su SHA-256), lo envía por correo y deja el estado en "pendiente".
+async function issueEmailVerification(user) {
+  const token = newSecurityToken();
+  await pool.query(
+    `UPDATE users
+     SET email_verified_at = NULL, email_verification_token = ?, email_verification_expires_at = ?
+     WHERE id = ?`,
+    [hashSecurityToken(token), toMysqlUtc(new Date(Date.now() + VERIFICATION_HOURS * 3600 * 1000)), user.id]
+  );
+  return sendEmailVerificationEmail(user, token);
+}
 
 // ------------------------------------------------------------
 // Usuarios
@@ -21,6 +48,8 @@ router.get('/users', ah(async (req, res) => {
   const event = await getActiveEvent();
   const [rows] = await pool.query(
     `SELECT u.id, u.full_name, u.username, u.email, u.role, u.is_active, u.created_at,
+            u.email_verified_at, u.email_verification_expires_at,
+            u.last_login_at, u.last_login_ip, u.locked_until,
             a.allocated_quantity,
             COALESCE(t.sold_count, 0) AS sold_count,
             COALESCE(t.revenue, 0)    AS revenue
@@ -57,18 +86,167 @@ router.post('/users', ah(async (req, res) => {
   if (email && !isValidEmail(email)) {
     return res.status(422).json({ error: 'Correo inválido' });
   }
+  const cleanEmail = email ? String(email).trim().toLowerCase() : null;
 
   const [dup] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
   if (dup.length) return res.status(409).json({ error: 'Ya existe un usuario con ese nombre de usuario' });
+  if (cleanEmail && await emailInUse(cleanEmail)) {
+    return res.status(409).json({ error: 'Ese correo ya está vinculado a otro usuario interno' });
+  }
 
   const id = uuid();
   await pool.query(
     'INSERT INTO users (id, full_name, username, email, password_hash, role, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)',
-    [id, String(fullName).trim(), username, email ? String(email).trim().toLowerCase() : null,
-      bcrypt.hashSync(password, 12), role]
+    [id, String(fullName).trim(), username, cleanEmail, bcrypt.hashSync(password, 12), role]
   );
-  await audit(pool, { actorId: req.user.id, action: 'user.create', entityType: 'user', entityId: id, metadata: { username, role } });
-  res.status(201).json({ ok: true, id, message: `Usuario ${username} creado` });
+  await audit(pool, { actorId: req.user.id, action: 'user.create', entityType: 'user', entityId: id, metadata: { username, role, email: cleanEmail } });
+
+  // Con correo vinculado: enviar la verificación de inmediato. Si el
+  // envío falla (SMTP caído), el usuario queda creado igual y se puede
+  // reenviar desde el panel.
+  let verification = null;
+  if (cleanEmail) {
+    const sent = await issueEmailVerification({
+      id, full_name: String(fullName).trim(), username, email: cleanEmail,
+    });
+    verification = sent.ok;
+  }
+  res.status(201).json({
+    ok: true,
+    id,
+    verification_email_sent: verification,
+    message: `Usuario ${username} creado${cleanEmail ? (verification
+      ? '. Se envió el correo de verificación.'
+      : '. No se pudo enviar el correo de verificación (revisa el SMTP y reenvíalo desde el panel).') : ''}`,
+  });
+}));
+
+// ------------------------------------------------------------
+// Editar usuario: nombre, correo vinculado (agregar / cambiar /
+// limpiar), rol y contraseña manual (opcional).
+// ------------------------------------------------------------
+router.put('/users/:id', ah(async (req, res) => {
+  const { id } = req.params;
+  const body = req.body || {};
+  const [rows] = await pool.query(
+    'SELECT id, full_name, username, email, role, email_verified_at FROM users WHERE id = ?',
+    [id]
+  );
+  const user = rows[0];
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+  const sets = [];
+  const params = [];
+  const meta = {};
+
+  // Nombre completo
+  if (body.full_name !== undefined) {
+    const fullName = String(body.full_name || '').trim();
+    if (fullName.length < 3 || fullName.length > 120) {
+      return res.status(422).json({ error: 'El nombre completo debe tener entre 3 y 120 caracteres' });
+    }
+    sets.push('full_name = ?');
+    params.push(fullName);
+    user.full_name = fullName;
+  }
+
+  // Rol (nunca el propio: el admin no puede quitarse el acceso a sí mismo)
+  if (body.role !== undefined && body.role !== user.role) {
+    if (!ROLES.includes(body.role)) {
+      return res.status(422).json({ error: 'Rol inválido (admin, seller o validator)' });
+    }
+    if (id === req.user.id) {
+      return res.status(409).json({ error: 'No puedes cambiar tu propio rol' });
+    }
+    sets.push('role = ?');
+    params.push(body.role);
+    meta.role = body.role;
+  }
+
+  // Correo vinculado: null/'' = limpiar; cambio = vuelve a "pendiente"
+  // y se reenvía la verificación.
+  let emailChanged = false;
+  if (body.email !== undefined) {
+    const cleanEmail = body.email ? String(body.email).trim().toLowerCase() : null;
+    if (cleanEmail && !isValidEmail(cleanEmail)) {
+      return res.status(422).json({ error: 'Correo inválido' });
+    }
+    if (cleanEmail !== (user.email || null)) {
+      if (cleanEmail && await emailInUse(cleanEmail, id)) {
+        return res.status(409).json({ error: 'Ese correo ya está vinculado a otro usuario interno' });
+      }
+      sets.push('email = ?', 'email_verified_at = NULL', 'email_verification_token = NULL', 'email_verification_expires_at = NULL');
+      params.push(cleanEmail);
+      emailChanged = Boolean(cleanEmail);
+      meta.email = cleanEmail;
+      user.email = cleanEmail;
+    }
+  }
+
+  // Contraseña manual (opcional). Mismo hash bcrypt del sistema; también
+  // desbloquea la cuenta e invalida cualquier token de recuperación.
+  if (body.password !== undefined && body.password !== '' && body.password !== null) {
+    if (typeof body.password !== 'string' || body.password.length < 8) {
+      return res.status(422).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+    }
+    sets.push('password_hash = ?', 'password_reset_token = NULL', 'password_reset_expires_at = NULL',
+      'failed_login_attempts = 0', 'locked_until = NULL');
+    params.push(bcrypt.hashSync(body.password, 12));
+    meta.password_changed = true;
+  }
+
+  if (!sets.length) return res.json({ ok: true, message: 'Sin cambios' });
+
+  params.push(id);
+  await pool.query(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`, params);
+  await audit(pool, {
+    actorId: req.user.id,
+    action: meta.password_changed ? 'user.update_password' : (meta.email !== undefined ? 'user.update_email' : 'user.update'),
+    entityType: 'user',
+    entityId: id,
+    metadata: { username: user.username, ...meta },
+  });
+
+  let verification = null;
+  if (emailChanged) {
+    const sent = await issueEmailVerification(user);
+    verification = sent.ok;
+  }
+  res.json({
+    ok: true,
+    verification_email_sent: verification,
+    message: `Usuario ${user.username} actualizado${emailChanged ? (verification
+      ? '. Se envió el correo de verificación.'
+      : '. No se pudo enviar el correo de verificación (revisa el SMTP y reenvíalo desde el panel).') : ''}`,
+  });
+}));
+
+// ------------------------------------------------------------
+// Reenviar el correo de verificación (genera token nuevo de 24 h)
+// ------------------------------------------------------------
+router.post('/users/:id/send-verification', ah(async (req, res) => {
+  const { id } = req.params;
+  const [rows] = await pool.query(
+    'SELECT id, full_name, username, email, email_verified_at, is_active FROM users WHERE id = ?',
+    [id]
+  );
+  const user = rows[0];
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+  if (!user.email) return res.status(422).json({ error: 'Este usuario no tiene correo vinculado' });
+  if (user.email_verified_at) return res.status(409).json({ error: 'El correo de este usuario ya está verificado' });
+
+  const sent = await issueEmailVerification(user);
+  if (!sent.ok) {
+    return res.status(502).json({ error: `No se pudo enviar el correo de verificación: ${sent.error}` });
+  }
+  await audit(pool, {
+    actorId: req.user.id,
+    action: 'user.resend_verification',
+    entityType: 'user',
+    entityId: id,
+    metadata: { username: user.username, email: user.email },
+  });
+  res.json({ ok: true, message: `Correo de verificación enviado a ${user.email}` });
 }));
 
 router.post('/users/:id/toggle', ah(async (req, res) => {

@@ -42,14 +42,41 @@ function formatEc(value, { withTime = true } = {}) {
   return `${date} ${pad(ec.getUTCHours())}:${pad(ec.getUTCMinutes())}`;
 }
 
-// 'YYYY-MM-DD' o Date de una columna DATE -> dd/mm/aaaa (sin conversión tz)
-function formatDateOnly(value) {
-  if (!value) return '-';
+// Normaliza el valor de una columna DATE a 'YYYY-MM-DD' SIN conversión
+// de zona horaria: un DATE es un día fijo, no un instante. Acepta el
+// string del driver ('2026-07-30'), un ISO serializado a medianoche o un
+// Date leído como UTC. Devuelve null si no es una fecha reconocible.
+function normalizeDateOnly(value) {
+  if (!value) return null;
   if (value instanceof Date) {
-    return `${pad(value.getUTCDate())}/${pad(value.getUTCMonth() + 1)}/${value.getUTCFullYear()}`;
+    if (Number.isNaN(value.getTime())) return null;
+    return `${value.getUTCFullYear()}-${pad(value.getUTCMonth() + 1)}-${pad(value.getUTCDate())}`;
   }
-  const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : String(value);
+  const m = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : null;
 }
 
-module.exports = { ecDayStartUtc, ecDayEndUtc, formatEc, formatDateOnly, toMysqlUtc, DATE_RE };
+// 'YYYY-MM-DD' -> { year, month, day } numéricos (o null)
+function parseDateOnly(value) {
+  const s = normalizeDateOnly(value);
+  if (!s) return null;
+  const [year, month, day] = s.split('-').map(Number);
+  return { year, month, day };
+}
+
+// 'YYYY-MM-DD' o Date de una columna DATE -> dd/mm/aaaa (sin conversión tz)
+function formatDateOnly(value) {
+  const s = normalizeDateOnly(value);
+  if (!s) return '-';
+  const [y, m, d] = s.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+// Instante UTC (DATETIME) -> texto legible en hora de Ecuador.
+// Alias explícito de formatEc: para fechas-hora reales, no columnas DATE.
+const formatDateTimeLocal = formatEc;
+
+module.exports = {
+  ecDayStartUtc, ecDayEndUtc, formatEc, formatDateOnly, formatDateTimeLocal,
+  normalizeDateOnly, parseDateOnly, toMysqlUtc, DATE_RE,
+};

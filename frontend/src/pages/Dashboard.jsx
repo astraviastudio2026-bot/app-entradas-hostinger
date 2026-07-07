@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api } from '../api';
 import { useAuth } from '../App.jsx';
 import {
-  ColorBadge, EmptyState, Spinner, StatCard, TICKET_COLORS, fmtDate, fmtMoney,
+  ColorBadge, EmptyState, Spinner, StatCard, TICKET_COLORS, fmtDate, fmtDateOnly, fmtMoney,
 } from '../components.jsx';
 
 function ColorBars({ byColor, total }) {
@@ -64,7 +64,7 @@ export default function Dashboard() {
         <div>
           <h1>Hola, {user.full_name.split(' ')[0]} 👋</h1>
           <p className="page-sub">
-            {data.event.name} · {fmtDate(data.event.event_date, { withTime: false })}
+            {data.event.name} · {fmtDateOnly(data.event.event_date)}
             {data.event.location ? ` · ${data.event.location}` : ''}
           </p>
         </div>

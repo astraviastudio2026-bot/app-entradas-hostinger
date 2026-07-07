@@ -161,6 +161,56 @@ a { color: inherit; text-decoration: none; }
 }
 .login-footer img { width: 26px; height: 26px; border-radius: 8px; object-fit: cover; opacity: 0.85; }
 
+/* recuperación de contraseña / verificación de correo */
+.login-forgot {
+  margin-top: 2px;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+.login-forgot:hover { color: var(--pink); text-decoration: underline; }
+.login-help {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin: 0 0 4px;
+}
+.login-info {
+  text-align: center;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 16px;
+}
+.login-info p { margin: 0; }
+
+/* estado del correo vinculado (panel de usuarios) */
+.email-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.email-badge-ok      { color: #4ade80; background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.35); }
+.email-badge-pending { color: #facc15; background: rgba(250, 204, 21, 0.10); border-color: rgba(250, 204, 21, 0.35); }
+.email-badge-none    { color: var(--text-dim); background: rgba(255, 255, 255, 0.05); border-color: var(--border); }
+.email-badge-locked  { color: #fb923c; background: rgba(251, 146, 60, 0.12); border-color: rgba(251, 146, 60, 0.4); }
+.email-cell { margin-bottom: 4px; word-break: break-all; }
+.field-hint {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+  margin: -6px 0 0;
+}
+
 /* ---------- formularios ---------- */
 .field { display: flex; flex-direction: column; gap: 6px; flex: 1; }
 .field > span, .field-label {

@@ -50,9 +50,23 @@ export function fmtMoney(value) {
   return `${CURRENCY} ${Number(value || 0).toFixed(2)}`;
 }
 
-// Fechas siempre en hora de Ecuador (America/Guayaquil); la BD guarda UTC.
+// ---- Fechas ----
+// Del backend llegan DOS tipos de valores y NO se tratan igual:
+//  · Columnas DATE puras (event_date): 'YYYY-MM-DD'. Son un día fijo sin
+//    hora ni zona horaria: se muestran TAL CUAL, sin ninguna conversión
+//    (convertirlas a Guayaquil restaba un día: 30/07 -> 29/07).
+//  · Columnas DATETIME (sold_at, starts_at, ends_at…): instante UTC real;
+//    se muestran convertidas a hora de Ecuador (America/Guayaquil).
+
+const DATE_ONLY_RE = /^(\d{4}-\d{2}-\d{2})$/;
+// Serialización antigua de una columna DATE: medianoche UTC exacta.
+const UTC_MIDNIGHT_RE = /^(\d{4}-\d{2}-\d{2})T00:00:00(\.000)?Z$/;
+
+// Fechas-hora siempre en hora de Ecuador; la BD guarda UTC.
 export function fmtDate(value, { withTime = true } = {}) {
   if (!value) return '—';
+  const only = String(value).match(DATE_ONLY_RE);
+  if (only) return fmtDateOnly(only[1]); // DATE puro: sin conversión tz
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '—';
   const opts = { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', year: 'numeric' };
@@ -60,22 +74,42 @@ export function fmtDate(value, { withTime = true } = {}) {
   return d.toLocaleString('es-EC', opts);
 }
 
-// Fecha del evento (columna DATE, sin hora real) -> dd/mm/aaaa SIN conversión
-// de zona horaria (espejo de formatDateOnly del backend: así el ticket en
-// pantalla muestra el mismo día que el PDF).
-export function fmtDateOnly(value) {
+// Normaliza cualquier valor de fecha a 'YYYY-MM-DD':
+//  · 'YYYY-MM-DD' (columna DATE) -> tal cual, día local fijo.
+//  · medianoche UTC ISO (DATE serializado a la antigua) -> mismo día.
+//  · DATETIME real -> día correspondiente en Ecuador.
+export function normalizeDateOnly(value) {
   if (!value) return '';
-  const m = String(value instanceof Date ? value.toISOString() : value).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : fmtDate(value, { withTime: false });
-}
-
-// Fecha UTC -> 'YYYY-MM-DD' del día correspondiente en Ecuador
-// (para <input type="date">).
-export function toInputDate(value) {
-  if (!value) return '';
+  const s = value instanceof Date ? value.toISOString() : String(value);
+  const m = s.match(DATE_ONLY_RE) || s.match(UTC_MIDNIGHT_RE);
+  if (m) return m[1];
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
+}
+
+// 'YYYY-MM-DD' -> { year, month, day } numéricos (o null)
+export function parseDateOnly(value) {
+  const s = normalizeDateOnly(value);
+  if (!s) return null;
+  const [year, month, day] = s.split('-').map(Number);
+  return { year, month, day };
+}
+
+// Fecha del evento (columna DATE, sin hora real) -> dd/mm/aaaa SIN conversión
+// de zona horaria (espejo de formatDateOnly del backend: así el ticket en
+// pantalla muestra el mismo día que el PDF y el correo).
+export function fmtDateOnly(value) {
+  const s = normalizeDateOnly(value);
+  if (!s) return '';
+  const [y, m, d] = s.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+// Valor para <input type="date">: 'YYYY-MM-DD'. Un DATE puro pasa sin
+// tocar; un DATETIME (fases) se traduce al día que representa en Ecuador.
+export function toInputDate(value) {
+  return normalizeDateOnly(value);
 }
 
 export const ROLE_LABELS = {
