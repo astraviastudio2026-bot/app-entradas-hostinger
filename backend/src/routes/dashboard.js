@@ -1,81 +1,68 @@
 const express = require('express');
-const { pool, getSetting } = require('../db');
+const { pool } = require('../db');
 const { requireAuth } = require('../middleware');
 const { ah } = require('../utils');
-const { getActivePhase } = require('./phases');
+const { getActiveEvent, getCurrentPhase } = require('../queries');
 
 const router = express.Router();
 router.use(requireAuth);
 
+// Contexto de venta para cualquier rol: evento activo, fase vigente y,
+// para vendedores, su cupo y ventas. El panel completo de administración
+// vive en GET /api/admin/dashboard.
 router.get('/', ah(async (req, res) => {
-  const totalLimit = Number(await getSetting('total_tickets', '600'));
-  const currency = await getSetting('currency_symbol', 'S/');
-  const phase = await getActivePhase();
+  const event = await getActiveEvent();
+  if (!event) {
+    return res.json({ event: null, phase: null, message: 'No hay evento activo configurado.' });
+  }
+  const phase = await getCurrentPhase(event.id);
 
-  const [[global]] = await pool.query(
-    `SELECT SUM(status <> 'cancelled') AS sold,
-            SUM(status = 'used')       AS used,
-            SUM(status = 'cancelled')  AS cancelled,
-            COALESCE(SUM(IF(status <> 'cancelled', price, 0)), 0) AS revenue
-     FROM tickets`
+  const [[{ globalSold }]] = await pool.query(
+    "SELECT COUNT(*) AS globalSold FROM tickets WHERE event_id = ? AND status <> 'cancelled'",
+    [event.id]
   );
-  const globalSold = Number(global.sold) || 0;
-
   const base = {
-    currency,
-    active_phase: phase,
-    total_limit: totalLimit,
-    global_sold: globalSold,
-    global_available: Math.max(0, totalLimit - globalSold),
+    event: {
+      id: event.id,
+      name: event.name,
+      location: event.location,
+      event_date: event.event_date,
+      total_tickets: event.total_tickets,
+    },
+    phase: phase ? { id: phase.id, name: phase.name, price: phase.price, ends_at: phase.ends_at } : null,
+    global_sold: Number(globalSold) || 0,
+    global_available: Math.max(0, event.total_tickets - (Number(globalSold) || 0)),
+    role: req.user.role,
   };
 
-  if (req.user.role === 'admin') {
-    const [[{ sellers }]] = await pool.query(
-      "SELECT COUNT(*) AS sellers FROM users WHERE role = 'seller' AND is_active = 1"
+  if (req.user.role === 'seller') {
+    const [alloc] = await pool.query(
+      'SELECT allocated_quantity FROM seller_allocations WHERE event_id = ? AND seller_id = ?',
+      [event.id, req.user.id]
     );
-    const [byColor] = await pool.query(
-      `SELECT selected_color AS color, SUM(status <> 'cancelled') AS sold
-       FROM tickets GROUP BY selected_color`
+    const [[mine]] = await pool.query(
+      `SELECT SUM(status <> 'cancelled') AS sold,
+              COALESCE(SUM(IF(status <> 'cancelled', price, 0)), 0) AS revenue
+       FROM tickets WHERE event_id = ? AND seller_id = ?`,
+      [event.id, req.user.id]
     );
-    const [recent] = await pool.query(
-      `SELECT t.id, t.code, t.buyer_name, t.selected_color, t.price, t.status, t.sold_at, u.name AS seller_name
-       FROM tickets t JOIN users u ON u.id = t.seller_id
-       ORDER BY t.id DESC LIMIT 8`
-    );
+    const quota = alloc.length ? alloc[0].allocated_quantity : null; // null = sin cupo asignado
+    const sold = Number(mine.sold) || 0;
     return res.json({
       ...base,
-      role: 'admin',
-      used: Number(global.used) || 0,
-      cancelled: Number(global.cancelled) || 0,
-      revenue: Number(global.revenue) || 0,
-      active_sellers: sellers,
-      by_color: byColor,
-      recent_tickets: recent,
+      quota,
+      my_sold: sold,
+      my_remaining: quota === null ? 0 : Math.max(0, quota - sold),
+      my_revenue: Number(mine.revenue) || 0,
     });
   }
 
-  const [[mine]] = await pool.query(
-    `SELECT SUM(status <> 'cancelled') AS sold,
-            COALESCE(SUM(IF(status <> 'cancelled', price, 0)), 0) AS revenue
-     FROM tickets WHERE seller_id = ?`,
-    [req.user.id]
-  );
-  const [[me]] = await pool.query('SELECT quota FROM users WHERE id = ?', [req.user.id]);
-  const [recent] = await pool.query(
-    `SELECT id, code, buyer_name, selected_color, price, status, sold_at
-     FROM tickets WHERE seller_id = ? ORDER BY id DESC LIMIT 8`,
-    [req.user.id]
-  );
-  const mySold = Number(mine.sold) || 0;
-  return res.json({
-    ...base,
-    role: 'seller',
-    quota: me ? me.quota : 0,
-    my_sold: mySold,
-    my_remaining: Math.max(0, (me ? me.quota : 0) - mySold),
-    my_revenue: Number(mine.revenue) || 0,
-    recent_tickets: recent,
-  });
+  if (req.user.role === 'admin') {
+    // El admin vende sin cupo propio: solo aplica el límite global.
+    return res.json({ ...base, quota: null, my_remaining: base.global_available });
+  }
+
+  return res.json(base);
 }));
 
 module.exports = router;

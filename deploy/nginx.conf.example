@@ -1,18 +1,17 @@
 # ============================================================
 # FLAGS FEST - Configuracion de Nginx para VPS Hostinger
-# Copia a /etc/nginx/sites-available/entradas-app y ajusta
-# server_name y rutas. Luego:
-#   ln -s /etc/nginx/sites-available/entradas-app /etc/nginx/sites-enabled/
+# Copia a /etc/nginx/sites-available/flagsfest y ajusta rutas.
+#   ln -s /etc/nginx/sites-available/flagsfest /etc/nginx/sites-enabled/
 #   nginx -t && systemctl reload nginx
-# Para HTTPS (necesario para la camara del scanner):
-#   certbot --nginx -d tudominio.com
+# HTTPS es OBLIGATORIO (la camara del scanner lo exige):
+#   certbot --nginx -d flagsfest.astraviastudio.cloud
 # ============================================================
 
 server {
     listen 80;
-    server_name tudominio.com;
+    server_name flagsfest.astraviastudio.cloud;
 
-    root /var/www/entradas-app/frontend/dist;
+    root /var/www/flagsfest/app/frontend/dist;
     index index.html;
 
     # API -> backend Node en 3001
@@ -25,7 +24,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # SPA: cualquier ruta sirve index.html
+    # SPA: cualquier ruta (incluida /ticket/validate/<token>) sirve index.html
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -38,3 +37,10 @@ server {
 
     client_max_body_size 5m;
 }
+
+# Notas de seguridad del VPS:
+# - MySQL solo en 127.0.0.1 (no exponerlo al exterior).
+# - Firewall: solo 80/443/SSH.
+# - STORAGE_DIR (PDFs) fuera de este root, con permisos solo para el
+#   usuario de la app; los PDFs se sirven via /api/tickets/:id/pdf.
+# - Backups: dump diario de MySQL (cron + mysqldump) + STORAGE_DIR.

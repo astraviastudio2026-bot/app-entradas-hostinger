@@ -1,5 +1,7 @@
 const mysql = require('mysql2/promise');
 
+// timezone 'Z': los DATETIME de la BD se interpretan como UTC al leer
+// y se escriben en UTC. Toda fecha en la BD está en UTC.
 const pool = mysql.createPool({
   host: process.env.DB_HOST || '127.0.0.1',
   port: Number(process.env.DB_PORT || 3306),
@@ -8,17 +10,8 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || 'entradas_app',
   waitForConnections: true,
   connectionLimit: 10,
-  namedPlaceholders: true,
   dateStrings: false,
-  timezone: 'local',
+  timezone: 'Z',
 });
 
-async function getSetting(key, fallback = null) {
-  const [rows] = await pool.query(
-    'SELECT setting_value FROM app_settings WHERE setting_key = ?',
-    [key]
-  );
-  return rows.length ? rows[0].setting_value : fallback;
-}
-
-module.exports = { pool, getSetting };
+module.exports = { pool };

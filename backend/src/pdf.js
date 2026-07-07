@@ -1,28 +1,22 @@
 const PDFDocument = require('pdfkit');
 const QRCode = require('qrcode');
-const { COLOR_INFO, TAGLINE } = require('./colors');
+const { COLOR_INFO, TAGLINE, CURRENCY } = require('./colors');
+const { formatEc, formatDateOnly } = require('./time');
 
-// Ticket horizontal inspirado en assets/referencias/formato-entrada.png:
-// franja tipo pulsera con muescas laterales, degradado oscuro tenido del
-// color elegido, logo FLAGS FEST a la izquierda, concepto neon al centro,
-// texto vertical "ELIGE TU COLOR, VIVE LA NOCHE." y QR con halo a la derecha.
-const PAGE_W = 842;
-const PAGE_H = 330;
+// Entrada en A4 horizontal, estética nightclub, inspirada en
+// assets/referencias/formato-entrada.png: franja tipo pulsera con muescas
+// laterales, degradado oscuro teñido del color elegido, logo FLAGS FEST,
+// concepto neón al centro, talón con el nº de entrada y QR a la derecha.
+// El QR contiene SOLO la URL de validación (sin datos personales).
+const PAGE_W = 842;  // A4 apaisado
+const PAGE_H = 595;
 
-// Recorta un texto para que quepa en una sola linea de ancho maxW
-// (pdfkit no siempre respeta lineBreak:false con ellipsis).
+// Recorta un texto para que quepa en una sola línea de ancho maxW.
 function fitText(doc, str, maxW) {
   let s = String(str);
   if (doc.widthOfString(s) <= maxW) return s;
   while (s.length > 1 && doc.widthOfString(`${s}…`) > maxW) s = s.slice(0, -1);
   return `${s}…`;
-}
-
-function formatDate(value) {
-  const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) return '-';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function drawSparkle(doc, x, y, size, color, opacity) {
@@ -48,7 +42,6 @@ function drawHeart(doc, cx, cy, size, color) {
 function drawFlags(doc, cx, cy, color) {
   doc.save();
   doc.lineWidth(1.6).strokeColor(color, 0.9);
-  // dos astas cruzadas con banderines, como el emblema del logo
   doc.moveTo(cx + 3, cy + 16).lineTo(cx - 13, cy - 14).stroke();
   doc.moveTo(cx - 3, cy + 16).lineTo(cx + 13, cy - 14).stroke();
   doc.fillColor(color, 0.9);
@@ -57,11 +50,15 @@ function drawFlags(doc, cx, cy, color) {
   doc.restore();
 }
 
-async function generateTicketPdf(ticket, opts = {}) {
+// ticket: short_code, ticket_number, qr_token, customer_name, customer_email,
+// selected_color, price, sold_at, phase_name, seller_name, event_name,
+// event_date, event_location.
+async function generateTicketPdf(ticket) {
   const color = COLOR_INFO[ticket.selected_color] || COLOR_INFO.verde;
-  const currency = opts.currency || 'S/';
+  const appUrl = (process.env.APP_URL || 'https://flagsfest.astraviastudio.cloud').replace(/\/$/, '');
+  const validateUrl = `${appUrl}/ticket/validate/${ticket.qr_token}`;
 
-  const qrPng = await QRCode.toBuffer(ticket.qr_token, {
+  const qrPng = await QRCode.toBuffer(validateUrl, {
     errorCorrectionLevel: 'M',
     width: 600,
     margin: 1,
@@ -72,7 +69,7 @@ async function generateTicketPdf(ticket, opts = {}) {
     size: [PAGE_W, PAGE_H],
     margin: 0,
     info: {
-      Title: `FLAGS FEST - Entrada ${ticket.code}`,
+      Title: `FLAGS FEST - Entrada ${ticket.short_code}`,
       Author: 'FLAGS FEST · ASTRAVIA STUDIO',
     },
   });
@@ -81,14 +78,20 @@ async function generateTicketPdf(ticket, opts = {}) {
   doc.on('data', (c) => chunks.push(c));
   const done = new Promise((resolve) => doc.on('end', () => resolve(Buffer.concat(chunks))));
 
-  // ---- fondo de pagina ----
-  doc.rect(0, 0, PAGE_W, PAGE_H).fill('#0b0b0d');
+  // ---- fondo de página ----
+  doc.rect(0, 0, PAGE_W, PAGE_H).fill('#050508');
 
-  // ---- cuerpo del ticket ----
+  // encabezado sutil sobre el ticket
+  doc.font('Helvetica-Bold').fontSize(10).fillColor('#ffffff', 0.35);
+  doc.text((ticket.event_name || 'FLAGS FEST').toUpperCase(), 0, 96, { width: PAGE_W, align: 'center', characterSpacing: 6 });
+
+  // ---- cuerpo del ticket (centrado en la página) ----
   const tx = 22;
-  const ty = 20;
-  const tw = PAGE_W - 44;
   const th = 216;
+  const bandH = 62;
+  const gap = 14;
+  const ty = (PAGE_H - (th + gap + bandH)) / 2;
+  const tw = PAGE_W - 44;
 
   doc.save();
   doc.roundedRect(tx, ty, tw, th, 16).clip();
@@ -97,23 +100,23 @@ async function generateTicketPdf(ticket, opts = {}) {
   grad.stop(0, color.midBg).stop(0.28, color.darkBg).stop(0.62, color.darkBg).stop(1, color.midBg);
   doc.rect(tx, ty, tw, th).fill(grad);
 
-  // franja lateral izquierda en color pleno
+  // talón izquierdo en color pleno con el nº de entrada vertical
   const tabW = 58;
   const tabGrad = doc.linearGradient(tx, ty, tx + tabW, ty);
   tabGrad.stop(0, color.hex).stop(1, color.midBg);
   doc.rect(tx, ty, tabW, th).fill(tabGrad);
 
-  // texto vertical FLAGS FEST en la franja
+  const ticketNo = `Nº ${String(ticket.ticket_number || 0).padStart(4, '0')}`;
   doc.save();
   doc.rotate(-90, { origin: [tx + tabW / 2, ty + th / 2] });
   doc
     .font('Helvetica-Bold')
-    .fontSize(15)
-    .fillColor('#0b0b0d', 0.85)
-    .text('FLAGS  FEST', tx + tabW / 2 - 90, ty + th / 2 - 8, {
+    .fontSize(17)
+    .fillColor('#0b0b0d', 0.9)
+    .text(ticketNo, tx + tabW / 2 - 90, ty + th / 2 - 10, {
       width: 180,
       align: 'center',
-      characterSpacing: 3,
+      characterSpacing: 4,
     });
   doc.restore();
 
@@ -144,6 +147,11 @@ async function generateTicketPdf(ticket, opts = {}) {
     subX += subWidths[i];
   }
 
+  // fecha y lugar del evento bajo el logo
+  doc.font('Helvetica').fontSize(8).fillColor('#ffffff', 0.75);
+  const whenWhere = [formatDateOnly(ticket.event_date), ticket.event_location].filter(Boolean).join('  ·  ');
+  doc.text(whenWhere, logoX, ty + 160, { width: 200, align: 'center', characterSpacing: 0.5 });
+
   // ---- bloque central: concepto del color ----
   const cX = tx + 320;
   const cW = 240;
@@ -161,7 +169,6 @@ async function generateTicketPdf(ticket, opts = {}) {
   doc.text(color.concept, cX, ty + 68, { width: cW, align: 'center' });
   drawHeart(doc, Math.min(cX + cW / 2 + conceptW / 2 + 24, cX + cW + 14), ty + 84, 12, color.hex);
 
-  // subrayado tipo trazo de neon
   const underW = Math.min(doc.widthOfString(color.concept) + 16, cW);
   doc
     .lineWidth(2.4)
@@ -169,13 +176,6 @@ async function generateTicketPdf(ticket, opts = {}) {
     .moveTo(cX + (cW - underW) / 2, ty + 106)
     .lineTo(cX + (cW + underW) / 2, ty + 106)
     .stroke();
-
-  doc.font('Helvetica').fontSize(7.5).fillColor(color.soft, 0.8);
-  doc.text(TAGLINE.toUpperCase(), cX, ty + 176, {
-    width: cW,
-    align: 'center',
-    characterSpacing: 1,
-  });
 
   doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#ffffff', 0.95);
   doc.text(color.description.toUpperCase(), cX + 20, ty + 124, {
@@ -185,10 +185,17 @@ async function generateTicketPdf(ticket, opts = {}) {
   });
 
   doc.font('Helvetica').fontSize(8).fillColor(color.soft, 0.9);
-  doc.text(`${currency} ${Number(ticket.price).toFixed(2)}  ·  ${ticket.phase_name || ''}`, cX, ty + 158, {
+  doc.text(`${CURRENCY} ${Number(ticket.price).toFixed(2)}  ·  ${ticket.phase_name || ''}`, cX, ty + 158, {
     width: cW,
     align: 'center',
     characterSpacing: 0.5,
+  });
+
+  doc.font('Helvetica').fontSize(7.5).fillColor(color.soft, 0.8);
+  doc.text(TAGLINE.toUpperCase(), cX, ty + 176, {
+    width: cW,
+    align: 'center',
+    characterSpacing: 1,
   });
 
   // ---- separador + texto vertical ----
@@ -215,10 +222,10 @@ async function generateTicketPdf(ticket, opts = {}) {
     });
   doc.restore();
 
-  // ---- bloque QR ----
-  const qrSize = 128;
-  const qrX = tx + tw - qrSize - 46;
-  const qrY = ty + 26;
+  // ---- bloque QR (~40 mm, negro sobre blanco) ----
+  const qrSize = 118;
+  const qrX = tx + tw - qrSize - 50;
+  const qrY = ty + 24;
 
   for (let i = 3; i >= 1; i -= 1) {
     doc
@@ -231,10 +238,15 @@ async function generateTicketPdf(ticket, opts = {}) {
   doc.image(qrPng, qrX, qrY, { width: qrSize, height: qrSize });
 
   doc.font('Helvetica-Bold').fontSize(15).fillColor(color.hex);
-  doc.text(ticket.code, qrX - 26, qrY + qrSize + 18, {
+  doc.text(ticket.short_code, qrX - 26, qrY + qrSize + 16, {
     width: qrSize + 52,
     align: 'center',
     characterSpacing: 4,
+  });
+  doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.6);
+  doc.text('Escanear en el ingreso', qrX - 26, qrY + qrSize + 36, {
+    width: qrSize + 52,
+    align: 'center',
   });
 
   doc.restore(); // fin clip del ticket
@@ -243,24 +255,23 @@ async function generateTicketPdf(ticket, opts = {}) {
   doc.lineWidth(1.2).strokeColor(color.hex, 0.55).roundedRect(tx, ty, tw, th, 16).stroke();
 
   // muescas laterales tipo boleto
-  doc.circle(tx, ty + th / 2, 11).fill('#0b0b0d');
-  doc.circle(tx + tw, ty + th / 2, 11).fill('#0b0b0d');
+  doc.circle(tx, ty + th / 2, 11).fill('#050508');
+  doc.circle(tx + tw, ty + th / 2, 11).fill('#050508');
   doc.lineWidth(1.2).strokeColor(color.hex, 0.45);
   doc.circle(tx, ty + th / 2, 11).stroke();
   doc.circle(tx + tw, ty + th / 2, 11).stroke();
 
   // ---- banda inferior de datos ----
-  const bandY = ty + th + 14;
-  const bandH = PAGE_H - bandY - 16;
+  const bandY = ty + th + gap;
   doc.roundedRect(tx, bandY, tw, bandH, 10).fill('#131316');
   doc.lineWidth(0.8).strokeColor('#ffffff', 0.12).roundedRect(tx, bandY, tw, bandH, 10).stroke();
 
   const fields = [
-    ['CLIENTE', ticket.buyer_name, ticket.buyer_email || ''],
+    ['CLIENTE', ticket.customer_name, ticket.customer_email || ''],
     ['COLOR', `${color.label} · ${color.concept}`, ''],
-    ['FASE', ticket.phase_name || '-', `${currency} ${Number(ticket.price).toFixed(2)}`],
-    ['FECHA DE COMPRA', formatDate(ticket.sold_at), ''],
-    ['VENDEDOR', ticket.seller_name || '-', ''],
+    ['FASE', ticket.phase_name || '-', `${CURRENCY} ${Number(ticket.price).toFixed(2)}`],
+    ['EVENTO', formatDateOnly(ticket.event_date), ticket.event_location || ''],
+    ['VENDEDOR', ticket.seller_name || '-', `Venta: ${formatEc(ticket.sold_at)}`],
   ];
   const colW = (tw - 220) / fields.length;
   fields.forEach(([label, value, extra], i) => {
@@ -285,7 +296,7 @@ async function generateTicketPdf(ticket, opts = {}) {
     characterSpacing: 0.6,
   });
   doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.45);
-  doc.text('Presenta este QR en el ingreso · válido para un solo uso', stampX, bandY + 27, {
+  doc.text('El QR solo podrá ser validado una vez', stampX, bandY + 27, {
     width: 184,
     align: 'right',
   });

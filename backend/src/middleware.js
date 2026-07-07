@@ -1,42 +1,74 @@
 const jwt = require('jsonwebtoken');
+const { pool } = require('./db');
+const { ah } = require('./utils');
+
+const COOKIE_NAME = 'ff_session';
+const SESSION_HOURS = 12;
 
 function jwtSecret() {
-  return process.env.JWT_SECRET || 'flags-fest-dev-secret';
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET no está configurado');
+  return secret;
 }
 
 function signToken(user) {
-  return jwt.sign(
-    { id: user.id, role: user.role, name: user.name, email: user.email },
-    jwtSecret(),
-    { expiresIn: process.env.JWT_EXPIRES_IN || '12h' }
-  );
+  return jwt.sign({ sub: user.id, role: user.role }, jwtSecret(), { expiresIn: `${SESSION_HOURS}h` });
 }
 
-function requireAuth(req, res, next) {
+function cookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: SESSION_HOURS * 3600 * 1000,
+  };
+}
+
+function setSessionCookie(res, user) {
+  res.cookie(COOKIE_NAME, signToken(user), cookieOptions());
+}
+
+function clearSessionCookie(res) {
+  res.clearCookie(COOKIE_NAME, { ...cookieOptions(), maxAge: undefined });
+}
+
+// Verifica el JWT (cookie httpOnly; se acepta Bearer como respaldo para
+// herramientas) y RELEE el usuario de la BD: desactivar una cuenta la
+// expulsa de inmediato. Esto sustituye a las políticas RLS de Supabase.
+const requireAuth = ah(async (req, res, next) => {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) {
-    return res.status(401).json({ error: 'No autenticado' });
-  }
+  const raw = (req.cookies && req.cookies[COOKIE_NAME]) ||
+    (header.startsWith('Bearer ') ? header.slice(7) : null);
+  if (!raw) return res.status(401).json({ error: 'No autenticado' });
+
+  let payload;
   try {
-    req.user = jwt.verify(token, jwtSecret());
-    return next();
-  } catch (err) {
+    payload = jwt.verify(raw, jwtSecret());
+  } catch {
     return res.status(401).json({ error: 'Sesión expirada o inválida' });
   }
-}
 
-function requireAdmin(req, res, next) {
-  if (!req.user || req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Requiere permisos de administrador' });
+  const [rows] = await pool.query(
+    'SELECT id, full_name, username, email, role, is_active FROM users WHERE id = ?',
+    [payload.sub]
+  );
+  const user = rows[0];
+  if (!user || !user.is_active) {
+    clearSessionCookie(res);
+    return res.status(401).json({ error: 'Sesión expirada o inválida' });
   }
+  req.user = user;
   return next();
+});
+
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'No tienes permisos para esta acción' });
+    }
+    return next();
+  };
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
-
-function isValidEmail(email) {
-  return typeof email === 'string' && EMAIL_RE.test(email.trim());
-}
-
-module.exports = { signToken, requireAuth, requireAdmin, isValidEmail };
+module.exports = { requireAuth, requireRole, setSessionCookie, clearSessionCookie, COOKIE_NAME };

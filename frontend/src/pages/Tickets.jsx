@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { api } from '../api';
+import { api, downloadPdf } from '../api';
 import { useAuth } from '../App.jsx';
 import {
-  ColorBadge, EmptyState, Spinner, StatusBadge, TICKET_COLORS, fmtDate, fmtMoney,
+  ColorBadge, EmptyState, Spinner, StatusBadge, TICKET_COLORS, fmtDate, fmtMoney, useToast,
 } from '../components.jsx';
 
 export default function Tickets() {
-  const { user, currency } = useAuth();
+  const { user } = useAuth();
+  const toast = useToast();
   const [tickets, setTickets] = useState(null);
   const [sellers, setSellers] = useState([]);
   const [phases, setPhases] = useState([]);
@@ -16,6 +17,7 @@ export default function Tickets() {
   const [color, setColor] = useState('');
   const [sellerId, setSellerId] = useState('');
   const [phaseId, setPhaseId] = useState('');
+  const [busyRow, setBusyRow] = useState('');
   const [error, setError] = useState('');
 
   const isAdmin = user.role === 'admin';
@@ -34,8 +36,9 @@ export default function Tickets() {
 
   useEffect(load, [status, color, sellerId, phaseId]);
   useEffect(() => {
-    api('/phases').then((d) => setPhases(d.phases)).catch(() => {});
-    if (isAdmin) api('/users').then((d) => setSellers(d.users.filter((u) => u.role === 'seller'))).catch(() => {});
+    if (!isAdmin) return;
+    api('/admin/phases').then((d) => setPhases(d.phases)).catch(() => {});
+    api('/admin/users').then((d) => setSellers(d.users.filter((u) => u.role === 'seller'))).catch(() => {});
   }, [isAdmin]);
 
   const totals = useMemo(() => {
@@ -47,6 +50,19 @@ export default function Tickets() {
     };
   }, [tickets]);
 
+  const resend = async (t) => {
+    setBusyRow(t.id);
+    try {
+      const d = await api(`/tickets/${t.id}/resend`, { method: 'POST' });
+      toast(d.message, 'success');
+      load();
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      setBusyRow('');
+    }
+  };
+
   if (error) return <EmptyState text={error} />;
 
   return (
@@ -56,11 +72,11 @@ export default function Tickets() {
           <h1>Entradas</h1>
           {totals ? (
             <p className="page-sub">
-              {totals.count} vendidas en esta vista · {fmtMoney(totals.revenue, currency)}
+              {totals.count} vendidas en esta vista · {fmtMoney(totals.revenue)}
             </p>
           ) : null}
         </div>
-        <Link to="/vender" className="btn btn-primary">+ Vender</Link>
+        <Link to="/seller" className="btn btn-primary">+ Vender</Link>
       </div>
 
       <div className="filters">
@@ -87,15 +103,17 @@ export default function Tickets() {
             <option key={c.key} value={c.key}>{c.label}</option>
           ))}
         </select>
-        <select value={phaseId} onChange={(e) => setPhaseId(e.target.value)}>
-          <option value="">Fase: todas</option>
-          {phases.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
         {isAdmin ? (
-          <select value={sellerId} onChange={(e) => setSellerId(e.target.value)}>
-            <option value="">Vendedor: todos</option>
-            {sellers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <>
+            <select value={phaseId} onChange={(e) => setPhaseId(e.target.value)}>
+              <option value="">Fase: todas</option>
+              {phases.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <select value={sellerId} onChange={(e) => setSellerId(e.target.value)}>
+              <option value="">Vendedor: todos</option>
+              {sellers.map((s) => <option key={s.id} value={s.id}>{s.full_name}</option>)}
+            </select>
+          </>
         ) : null}
       </div>
 
@@ -114,24 +132,49 @@ export default function Tickets() {
                 {isAdmin ? <th>Vendedor</th> : null}
                 <th>Fecha</th>
                 <th>Estado</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
               {tickets.map((t) => (
                 <tr key={t.id}>
                   <td data-label="Código">
-                    <Link to={`/entradas/${t.id}`} className="code-link">{t.code}</Link>
+                    <Link to={`/entradas/${t.id}`} className="code-link">{t.short_code}</Link>
                   </td>
                   <td data-label="Cliente">
-                    <div className="cell-main">{t.buyer_name}</div>
-                    <div className="cell-sub">{t.buyer_email}</div>
+                    <div className="cell-main">{t.customer_name}</div>
+                    <div className="cell-sub">{t.customer_email}</div>
                   </td>
                   <td data-label="Color"><ColorBadge color={t.selected_color} /></td>
-                  <td data-label="Precio">{fmtMoney(t.price, currency)}</td>
+                  <td data-label="Precio">{fmtMoney(t.price)}</td>
                   <td data-label="Fase">{t.phase_name}</td>
                   {isAdmin ? <td data-label="Vendedor">{t.seller_name}</td> : null}
                   <td data-label="Fecha">{fmtDate(t.sold_at)}</td>
-                  <td data-label="Estado"><StatusBadge status={t.status} /></td>
+                  <td data-label="Estado">
+                    <StatusBadge status={t.status} />
+                    {t.email_last_error && !t.email_sent_at ? (
+                      <div className="cell-sub" title={t.email_last_error}>✉ correo pendiente</div>
+                    ) : null}
+                  </td>
+                  <td data-label="Acciones">
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => downloadPdf(t.id, t.short_code).catch((err) => toast(err.message, 'error'))}
+                      >
+                        PDF
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        disabled={busyRow === t.id || t.status === 'cancelled'}
+                        onClick={() => resend(t)}
+                      >
+                        {busyRow === t.id ? '…' : 'Reenviar'}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

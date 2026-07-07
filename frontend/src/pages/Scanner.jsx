@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { api } from '../api';
-import { ColorDot, fmtDate, useToast } from '../components.jsx';
+import { ColorDot, TICKET_COLORS, fmtDate, fmtMoney, useToast } from '../components.jsx';
 
 const RESULT_STYLES = {
   valid: { icon: '✓', title: 'ACCESO PERMITIDO', className: 'scan-valid' },
@@ -15,28 +15,45 @@ export default function Scanner() {
   const scannerRef = useRef(null);
   const busyRef = useRef(false);
   const [running, setRunning] = useState(false);
+  const [paused, setPaused] = useState(false);
   const [result, setResult] = useState(null);
   const [manual, setManual] = useState('');
   const [history, setHistory] = useState([]);
 
   const loadHistory = () => {
-    api('/scan/history').then((d) => setHistory(d.scans)).catch(() => {});
+    api('/tickets/validations').then((d) => setHistory(d.validations)).catch(() => {});
   };
   useEffect(loadHistory, []);
 
-  const processToken = async (token) => {
+  // Tras cada lectura el escáner queda en pausa: nunca se valida en bucle.
+  const pauseCamera = () => {
+    const s = scannerRef.current;
+    if (s) {
+      try { s.pause(true); setPaused(true); } catch { /* sin cámara */ }
+    }
+  };
+
+  const resumeCamera = () => {
+    setResult(null);
+    const s = scannerRef.current;
+    if (s) {
+      try { s.resume(); setPaused(false); } catch { /* sin cámara */ }
+    }
+  };
+
+  const validate = async (path, body) => {
     if (busyRef.current) return;
     busyRef.current = true;
+    pauseCamera();
     try {
-      const data = await api('/scan', { method: 'POST', body: { token } });
+      const data = await api(path, { method: 'POST', body });
       setResult(data);
       loadHistory();
-      if (navigator.vibrate) navigator.vibrate(data.result === 'valid' ? 100 : [80, 60, 80]);
+      if (navigator.vibrate) navigator.vibrate(data.status === 'valid' ? 100 : [80, 60, 80]);
     } catch (err) {
       toast(err.message, 'error');
     } finally {
-      // pequeña pausa para no procesar el mismo QR muchas veces seguidas
-      setTimeout(() => { busyRef.current = false; }, 1500);
+      busyRef.current = false;
     }
   };
 
@@ -48,12 +65,13 @@ export default function Scanner() {
       await scanner.start(
         { facingMode: 'environment' },
         { fps: 10, qrbox: { width: 230, height: 230 } },
-        (decodedText) => processToken(decodedText.trim()),
+        (decodedText) => validate('/tickets/validate', { scannedValue: decodedText.trim(), source: 'scanner' }),
         () => {}
       );
       setRunning(true);
-    } catch (err) {
-      toast('No se pudo iniciar la cámara. Revisa los permisos del navegador.', 'error');
+      setPaused(false);
+    } catch {
+      toast('No se pudo iniciar la cámara. Revisa los permisos del navegador (requiere HTTPS).', 'error');
     }
   };
 
@@ -67,6 +85,7 @@ export default function Scanner() {
       scannerRef.current = null;
     }
     setRunning(false);
+    setPaused(false);
   };
 
   useEffect(() => () => {
@@ -78,13 +97,19 @@ export default function Scanner() {
 
   const submitManual = (e) => {
     e.preventDefault();
-    if (manual.trim()) {
-      processToken(manual.trim());
-      setManual('');
+    const value = manual.trim();
+    if (!value) return;
+    setManual('');
+    // Si parece un token/URL de QR se valida como escaneo; si no, como código FF-0001.
+    if (/[a-f0-9]{40,64}/i.test(value) || value.includes('/ticket/validate/')) {
+      validate('/tickets/validate', { scannedValue: value, source: 'manual' });
+    } else {
+      validate('/tickets/validate-code', { code: value });
     }
   };
 
-  const style = result ? RESULT_STYLES[result.result] : null;
+  const style = result ? RESULT_STYLES[result.status] : null;
+  const tkColor = result?.ticket ? TICKET_COLORS[result.ticket.selected_color] : null;
 
   return (
     <div className="page">
@@ -119,7 +144,7 @@ export default function Scanner() {
             <input
               value={manual}
               onChange={(e) => setManual(e.target.value)}
-              placeholder="O ingresa el token manualmente…"
+              placeholder="Validar por código: FF-0001"
             />
             <button type="submit" className="btn btn-ghost">Validar</button>
           </form>
@@ -132,40 +157,52 @@ export default function Scanner() {
               <h2>{style.title}</h2>
               {result.ticket ? (
                 <div className="scan-ticket">
-                  <span className="scan-code">{result.ticket.code}</span>
-                  <span className="scan-buyer">{result.ticket.buyer_name}</span>
-                  <span className="scan-color">
-                    <ColorDot color={result.ticket.color} /> {result.ticket.color_label}
+                  <span className="scan-code">{result.ticket.short_code}</span>
+                  <span className="scan-buyer">{result.ticket.customer_name}</span>
+                  {tkColor ? (
+                    <span className="scan-color">
+                      <ColorDot color={result.ticket.selected_color} /> {tkColor.label} · {tkColor.concept}
+                    </span>
+                  ) : null}
+                  <span className="scan-extra">
+                    {result.ticket.phase_name || '—'} · {fmtMoney(result.ticket.price)}
+                    {result.ticket.seller_name ? ` · Vendida por ${result.ticket.seller_name}` : ''}
                   </span>
-                  <span className="scan-extra">{result.ticket.phase_name} · Vendida por {result.ticket.seller_name}</span>
                 </div>
               ) : null}
-              {result.result === 'already_used' ? (
-                <p className="scan-note">Primer escaneo: {fmtDate(result.used_at)}</p>
-              ) : null}
-              {result.result === 'cancelled' && result.cancelled_at ? (
-                <p className="scan-note">Anulada el {fmtDate(result.cancelled_at)}</p>
+              {result.status === 'already_used' && result.ticket?.used_at ? (
+                <p className="scan-note">
+                  Primer ingreso: {fmtDate(result.ticket.used_at)}
+                  {result.ticket.validated_by_name ? ` · validó ${result.ticket.validated_by_name}` : ''}
+                </p>
               ) : null}
               <p className="scan-message">{result.message}</p>
+              {running && paused ? (
+                <button type="button" className="btn btn-primary btn-block" onClick={resumeCamera}>
+                  Escanear siguiente
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="scan-result scan-waiting">
               <span className="scan-icon">⌖</span>
-              <h2>Esperando escaneo…</h2>
-              <p className="scan-note">Apunta la cámara al QR de la entrada</p>
+              <h2>{running ? 'Esperando escaneo…' : 'Cámara apagada'}</h2>
+              <p className="scan-note">
+                {running ? 'Apunta la cámara al QR de la entrada' : 'Inicia la cámara o valida por código manual'}
+              </p>
             </div>
           )}
 
           <div className="panel">
-            <h3>Historial de escaneos</h3>
-            {!history.length ? <p className="cell-sub">Aún no hay escaneos</p> : (
+            <h3>Historial de validaciones</h3>
+            {!history.length ? <p className="cell-sub">Aún no hay validaciones</p> : (
               <div className="scan-history">
-                {history.slice(0, 25).map((s) => (
-                  <div key={s.id} className="scan-history-row">
-                    <span className={`scan-dot scan-dot-${s.result}`} />
-                    <span className="scan-history-code">{s.code || 'QR desconocido'}</span>
-                    <span className="scan-history-name">{s.buyer_name || '—'}</span>
-                    <span className="scan-history-time">{fmtDate(s.scanned_at)}</span>
+                {history.slice(0, 25).map((v) => (
+                  <div key={v.id} className="scan-history-row">
+                    <span className={`scan-dot scan-dot-${v.result}`} />
+                    <span className="scan-history-code">{v.short_code || 'QR desconocido'}</span>
+                    <span className="scan-history-name">{v.customer_name || '—'}</span>
+                    <span className="scan-history-time">{fmtDate(v.scanned_at)}</span>
                   </div>
                 ))}
               </div>

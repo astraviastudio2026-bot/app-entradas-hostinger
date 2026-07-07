@@ -35,4 +35,7 @@ const COLOR_INFO = {
 
 const TAGLINE = 'Elige tu color, vive la noche';
 
-module.exports = { COLOR_INFO, TAGLINE };
+// Moneda del evento (Ecuador usa USD)
+const CURRENCY = process.env.CURRENCY_SYMBOL || '$';
+
+module.exports = { COLOR_INFO, TAGLINE, CURRENCY };

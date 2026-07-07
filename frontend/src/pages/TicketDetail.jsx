@@ -8,7 +8,7 @@ import {
 
 export default function TicketDetail() {
   const { id } = useParams();
-  const { user, currency } = useAuth();
+  const { user } = useAuth();
   const toast = useToast();
   const [ticket, setTicket] = useState(null);
   const [error, setError] = useState('');
@@ -42,9 +42,12 @@ export default function TicketDetail() {
   });
 
   const cancel = () => {
-    if (!window.confirm(`¿Anular la entrada ${ticket.code}? Esta acción libera su cupo y el QR dejará de ser válido.`)) return;
+    const reason = window.prompt(
+      `¿Anular la entrada ${ticket.short_code}? El QR dejará de ser válido y su cupo queda liberado.\n\nMotivo (opcional):`
+    );
+    if (reason === null) return;
     doAction('cancel', async () => {
-      const d = await api(`/tickets/${ticket.id}/cancel`, { method: 'POST' });
+      const d = await api(`/tickets/${ticket.id}/cancel`, { method: 'POST', body: { reason: reason || undefined } });
       toast(d.message, 'success');
       load();
     });
@@ -56,7 +59,7 @@ export default function TicketDetail() {
         <div>
           <Link to="/entradas" className="link">← Entradas</Link>
           <h1 className="ticket-title">
-            {ticket.code} <StatusBadge status={ticket.status} />
+            {ticket.short_code} <StatusBadge status={ticket.status} />
           </h1>
         </div>
       </div>
@@ -68,7 +71,7 @@ export default function TicketDetail() {
           <span className="tk-desc">{c.description}</span>
         </div>
         <div className="ticket-hero-right">
-          <span className="tk-code">{ticket.code}</span>
+          <span className="tk-code">{ticket.short_code}</span>
           <span className="tk-color-name">{c.label.toUpperCase()}</span>
         </div>
       </div>
@@ -77,21 +80,21 @@ export default function TicketDetail() {
         <div className="panel">
           <h3>Datos del cliente</h3>
           <dl className="detail-list">
-            <div><dt>Nombre</dt><dd>{ticket.buyer_name}</dd></div>
-            <div><dt>Correo</dt><dd>{ticket.buyer_email}</dd></div>
+            <div><dt>Nombre</dt><dd>{ticket.customer_name}</dd></div>
+            <div><dt>Correo</dt><dd>{ticket.customer_email}</dd></div>
             <div><dt>Color elegido</dt><dd style={{ color: c.hex, fontWeight: 700 }}>{c.label} · {c.concept}</dd></div>
+            {ticket.notes ? <div><dt>Observación</dt><dd>{ticket.notes}</dd></div> : null}
           </dl>
         </div>
         <div className="panel">
           <h3>Datos de la venta</h3>
           <dl className="detail-list">
-            <div><dt>Precio</dt><dd>{fmtMoney(ticket.price, currency)}</dd></div>
-            <div><dt>Fase</dt><dd>{ticket.phase_name}</dd></div>
+            <div><dt>Nº de entrada</dt><dd>{String(ticket.ticket_number).padStart(4, '0')}</dd></div>
+            <div><dt>Precio</dt><dd>{fmtMoney(ticket.price)}</dd></div>
+            <div><dt>Fase</dt><dd>{ticket.phase_name || '—'}</dd></div>
             <div><dt>Vendedor</dt><dd>{ticket.seller_name}</dd></div>
             <div><dt>Vendida</dt><dd>{fmtDate(ticket.sold_at)}</dd></div>
-            <div><dt>Usada</dt><dd>{fmtDate(ticket.used_at)}</dd></div>
-            {ticket.cancelled_at ? <div><dt>Anulada</dt><dd>{fmtDate(ticket.cancelled_at)}</dd></div> : null}
-            <div><dt>Último envío por correo</dt><dd>{fmtDate(ticket.email_sent_at)}</dd></div>
+            <div><dt>Usada</dt><dd>{fmtDate(ticket.used_at)}{ticket.validated_by_name ? ` · por ${ticket.validated_by_name}` : ''}</dd></div>
           </dl>
         </div>
       </div>
@@ -103,7 +106,7 @@ export default function TicketDetail() {
             type="button"
             className="btn btn-primary"
             disabled={busy === 'pdf'}
-            onClick={() => doAction('pdf', () => downloadPdf(ticket.id, ticket.code))}
+            onClick={() => doAction('pdf', () => downloadPdf(ticket.id, ticket.short_code))}
           >
             {busy === 'pdf' ? 'Descargando…' : 'Descargar PDF'}
           </button>
@@ -115,7 +118,7 @@ export default function TicketDetail() {
           >
             {busy === 'resend' ? 'Enviando…' : 'Reenviar por correo'}
           </button>
-          {user.role === 'admin' && ticket.status !== 'cancelled' ? (
+          {user.role === 'admin' && ticket.status === 'sold' ? (
             <button
               type="button"
               className="btn btn-danger"

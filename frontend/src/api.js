@@ -1,20 +1,8 @@
 const API = import.meta.env.VITE_API_URL || '/api';
 
-export function getToken() {
-  return localStorage.getItem('ff_token');
-}
-
-export function setSession(token, user, currency) {
-  localStorage.setItem('ff_token', token);
-  localStorage.setItem('ff_user', JSON.stringify(user));
-  if (currency) localStorage.setItem('ff_currency', currency);
-}
-
-export function clearSession() {
-  localStorage.removeItem('ff_token');
-  localStorage.removeItem('ff_user');
-}
-
+// La sesión vive en una cookie httpOnly que maneja el backend.
+// En localStorage solo se cachea el usuario para pintar la UI al instante;
+// la sesión real se revalida siempre con GET /api/auth/me.
 export function getStoredUser() {
   try {
     return JSON.parse(localStorage.getItem('ff_user') || 'null');
@@ -23,14 +11,13 @@ export function getStoredUser() {
   }
 }
 
-export function getCurrency() {
-  return localStorage.getItem('ff_currency') || 'S/';
+export function storeUser(user) {
+  if (user) localStorage.setItem('ff_user', JSON.stringify(user));
+  else localStorage.removeItem('ff_user');
 }
 
 export async function api(path, { method = 'GET', body } = {}) {
   const headers = {};
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
   if (body) headers['Content-Type'] = 'application/json';
 
   let res;
@@ -38,6 +25,7 @@ export async function api(path, { method = 'GET', body } = {}) {
     res = await fetch(`${API}${path}`, {
       method,
       headers,
+      credentials: 'include',
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -45,7 +33,7 @@ export async function api(path, { method = 'GET', body } = {}) {
   }
 
   if (res.status === 401) {
-    clearSession();
+    storeUser(null);
     window.dispatchEvent(new Event('ff-unauthorized'));
   }
   const data = await res.json().catch(() => ({}));
@@ -53,11 +41,9 @@ export async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-// Descarga un binario autenticado (PDF) y dispara el guardado en el navegador.
-export async function downloadPdf(ticketId, code) {
-  const res = await fetch(`${API}/tickets/${ticketId}/pdf`, {
-    headers: { Authorization: `Bearer ${getToken()}` },
-  });
+// Descarga el PDF autenticado y dispara el guardado en el navegador.
+export async function downloadPdf(ticketId, shortCode) {
+  const res = await fetch(`${API}/tickets/${ticketId}/pdf`, { credentials: 'include' });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || 'No se pudo descargar el PDF');
@@ -66,7 +52,7 @@ export async function downloadPdf(ticketId, code) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `FLAGSFEST-${code}.pdf`;
+  a.download = `entrada-${shortCode}.pdf`;
   document.body.appendChild(a);
   a.click();
   a.remove();

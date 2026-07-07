@@ -1,147 +1,164 @@
 -- ============================================================
 -- FLAGS FEST - Esquema de base de datos (MySQL 8+)
--- Sistema de venta de entradas
+-- Sistema de venta y validación de entradas con QR
 --
--- Uso:
---   mysql -u entradas_user -p entradas_app < schema.sql
+-- Uso recomendado:
+--   npm run migrate   (backend/scripts/migrate.js)
+-- El script detecta instalaciones legacy (ids INT) y migra los
+-- datos. Este SQL también puede ejecutarse directo en una BD
+-- vacía: todas las sentencias son idempotentes.
 --
--- El script es idempotente: usa CREATE TABLE IF NOT EXISTS y
--- seeds con INSERT ... ON DUPLICATE KEY / WHERE NOT EXISTS,
--- por lo que puede re-ejecutarse sin destruir datos.
+-- Todas las fechas se guardan en UTC (DATETIME); la conversión a
+-- hora de Ecuador (America/Guayaquil, UTC-5) se hace al mostrar.
 -- ============================================================
 
 SET NAMES utf8mb4;
 
 -- ------------------------------------------------------------
--- Usuarios (administradores y vendedores)
+-- Usuarios internos (admin, vendedores, control de acceso)
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
-  id            INT UNSIGNED     NOT NULL AUTO_INCREMENT,
-  name          VARCHAR(120)     NOT NULL,
-  email         VARCHAR(190)     NOT NULL,
-  password_hash VARCHAR(100)     NOT NULL,
-  role          ENUM('admin','seller') NOT NULL DEFAULT 'seller',
-  quota         INT UNSIGNED     NOT NULL DEFAULT 0 COMMENT 'Cupo de entradas asignado (solo vendedores)',
-  is_active     TINYINT(1)       NOT NULL DEFAULT 1,
-  created_at    DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_users_email (email),
-  KEY idx_users_role (role),
-  KEY idx_users_active (is_active)
+  id            CHAR(36)     NOT NULL PRIMARY KEY,          -- UUID generado en Node
+  full_name     VARCHAR(120) NOT NULL,
+  username      VARCHAR(60)  NOT NULL,                      -- usuario interno de login, minúsculas
+  email         VARCHAR(160) NULL,                          -- opcional/informativo
+  password_hash VARCHAR(100) NOT NULL,                      -- bcrypt (cost 10-12)
+  role          ENUM('admin','seller','validator') NOT NULL,
+  is_active     TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_users_username (username),
+  KEY idx_users_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
--- Fases de venta (preventas, dia del evento, etc.)
+-- Eventos (solo uno activo a la vez; lo garantiza el backend)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS events (
+  id            CHAR(36)     NOT NULL PRIMARY KEY,
+  name          VARCHAR(160) NOT NULL,
+  location      VARCHAR(160) NULL,
+  event_date    DATE         NOT NULL,
+  total_tickets INT          NOT NULL DEFAULT 600,
+  is_active     TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- Fases de precio de un evento
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sale_phases (
-  id         INT UNSIGNED   NOT NULL AUTO_INCREMENT,
-  name       VARCHAR(120)   NOT NULL,
-  price      DECIMAL(10,2)  NOT NULL,
-  start_date DATETIME       NOT NULL,
-  end_date   DATETIME       NOT NULL,
-  is_active  TINYINT(1)     NOT NULL DEFAULT 1,
-  created_at DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_phases_name (name),
-  KEY idx_phases_active_dates (is_active, start_date, end_date)
+  id          CHAR(36)      NOT NULL PRIMARY KEY,
+  event_id    CHAR(36)      NOT NULL,
+  name        VARCHAR(80)   NOT NULL,                       -- "Preventa", "Fase 1", "En puerta"…
+  phase_order INT           NOT NULL,
+  starts_at   DATETIME      NOT NULL,                       -- inicio del día en Ecuador convertido a UTC
+  ends_at     DATETIME      NOT NULL,                       -- fin del día (23:59:59 EC) en UTC
+  price       DECIMAL(10,2) NOT NULL,
+  is_active   TINYINT(1)    NOT NULL DEFAULT 1,
+  created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_phases_event (event_id),
+  CONSTRAINT fk_phases_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
+-- Cupo de entradas por vendedor y evento
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS seller_allocations (
+  id                 CHAR(36) NOT NULL PRIMARY KEY,
+  event_id           CHAR(36) NOT NULL,
+  seller_id          CHAR(36) NOT NULL,
+  allocated_quantity INT      NOT NULL,                     -- >= 0, validado en backend
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_alloc_event_seller (event_id, seller_id),
+  KEY idx_alloc_seller (seller_id),
+  CONSTRAINT fk_alloc_event  FOREIGN KEY (event_id)  REFERENCES events(id) ON DELETE CASCADE,
+  CONSTRAINT fk_alloc_seller FOREIGN KEY (seller_id) REFERENCES users(id)  ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
 -- Entradas
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tickets (
-  id             INT UNSIGNED   NOT NULL AUTO_INCREMENT,
-  code           VARCHAR(20)    NOT NULL COMMENT 'Codigo visible tipo FF-0001',
-  qr_token       CHAR(48)       NOT NULL COMMENT 'Token aleatorio del QR',
-  buyer_name     VARCHAR(150)   NOT NULL,
-  buyer_email    VARCHAR(190)   NOT NULL,
-  selected_color ENUM('verde','rojo','amarillo') NOT NULL,
-  price          DECIMAL(10,2)  NOT NULL COMMENT 'Precio aplicado al momento de la venta',
-  phase_id       INT UNSIGNED   NOT NULL,
-  seller_id      INT UNSIGNED   NOT NULL,
-  status         ENUM('sold','used','cancelled') NOT NULL DEFAULT 'sold',
-  email_sent_at  DATETIME       NULL,
-  sold_at        DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  used_at        DATETIME       NULL,
-  cancelled_at   DATETIME       NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_tickets_code (code),
-  UNIQUE KEY uq_tickets_qr_token (qr_token),
-  KEY idx_tickets_status (status),
-  KEY idx_tickets_seller (seller_id, status),
-  KEY idx_tickets_phase (phase_id),
-  KEY idx_tickets_color (selected_color),
-  KEY idx_tickets_sold_at (sold_at),
-  CONSTRAINT fk_tickets_phase  FOREIGN KEY (phase_id)  REFERENCES sale_phases (id),
-  CONSTRAINT fk_tickets_seller FOREIGN KEY (seller_id) REFERENCES users (id)
+  id                  CHAR(36)      NOT NULL PRIMARY KEY,
+  event_id            CHAR(36)      NOT NULL,
+  seller_id           CHAR(36)      NOT NULL,
+  sale_phase_id       CHAR(36)      NULL,
+  ticket_number       INT           NOT NULL,               -- correlativo POR EVENTO (0001, 0002…)
+  short_code          VARCHAR(12)   NOT NULL,               -- global legible: "FF-0001"
+  qr_token            VARCHAR(64)   NOT NULL,               -- 32 bytes aleatorios en hex (64 chars; legacy 48)
+  qr_hash             CHAR(64)      NOT NULL,               -- SHA-256(token + "." + QR_SECRET)
+  customer_name       VARCHAR(120)  NOT NULL,
+  customer_email      VARCHAR(160)  NOT NULL,
+  selected_color      ENUM('verde','rojo','amarillo') NOT NULL,
+  price               DECIMAL(10,2) NOT NULL,               -- congelado al precio de la fase al vender
+  status              ENUM('sold','used','cancelled') NOT NULL DEFAULT 'sold',
+  notes               VARCHAR(500)  NULL,
+  pdf_path            VARCHAR(255)  NULL,                   -- ruta del PDF en disco
+  email_sent_at       DATETIME      NULL,
+  email_last_error    TEXT          NULL,
+  sold_at             DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  used_at             DATETIME      NULL,
+  validated_by        CHAR(36)      NULL,
+  cancelled_at        DATETIME      NULL,
+  cancelled_by        CHAR(36)      NULL,
+  cancellation_reason VARCHAR(300)  NULL,
+  created_at          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_tickets_event_number (event_id, ticket_number),
+  UNIQUE KEY uq_tickets_short_code   (short_code),
+  UNIQUE KEY uq_tickets_qr_token     (qr_token),
+  UNIQUE KEY uq_tickets_qr_hash      (qr_hash),
+  KEY idx_tickets_event   (event_id),
+  KEY idx_tickets_seller  (seller_id),
+  KEY idx_tickets_status  (status),
+  KEY idx_tickets_email   (customer_email),
+  CONSTRAINT fk_tickets_event     FOREIGN KEY (event_id)      REFERENCES events(id)      ON DELETE CASCADE,
+  CONSTRAINT fk_tickets_seller    FOREIGN KEY (seller_id)     REFERENCES users(id),
+  CONSTRAINT fk_tickets_phase     FOREIGN KEY (sale_phase_id) REFERENCES sale_phases(id) ON DELETE SET NULL,
+  CONSTRAINT fk_tickets_validator FOREIGN KEY (validated_by)  REFERENCES users(id)       ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Contador global para el short_code (FF-0001, FF-0002, …)
+-- (`last_value` es palabra reservada en MySQL 8, por eso va escapada)
+CREATE TABLE IF NOT EXISTS short_code_counter (
+  id           TINYINT NOT NULL PRIMARY KEY,   -- siempre fila 1
+  `last_value` INT     NOT NULL DEFAULT 0
+) ENGINE=InnoDB;
+INSERT INTO short_code_counter (id, `last_value`)
+SELECT 1, 0
+WHERE NOT EXISTS (SELECT 1 FROM short_code_counter WHERE id = 1);
+
+-- ------------------------------------------------------------
+-- Historial de intentos de validación (se registra TODO intento)
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ticket_validations (
+  id           CHAR(36)     NOT NULL PRIMARY KEY,
+  ticket_id    CHAR(36)     NULL,                           -- NULL si el QR era ilegible/desconocido
+  validator_id CHAR(36)     NULL,
+  result       ENUM('valid','already_used','cancelled','invalid') NOT NULL,
+  message      VARCHAR(200) NOT NULL,
+  metadata     JSON         NULL,                           -- { source: 'scanner'|'manual'|'link', … }
+  scanned_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_validations_ticket  (ticket_id),
+  KEY idx_validations_scanned (scanned_at),
+  CONSTRAINT fk_val_ticket    FOREIGN KEY (ticket_id)    REFERENCES tickets(id) ON DELETE CASCADE,
+  CONSTRAINT fk_val_validator FOREIGN KEY (validator_id) REFERENCES users(id)   ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
--- Historial de escaneos de QR
+-- Auditoría de acciones
 -- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS ticket_scans (
-  id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
-  ticket_id  INT UNSIGNED  NULL COMMENT 'NULL si el token escaneado no existe',
-  scanned_by INT UNSIGNED  NULL,
-  qr_token   CHAR(48)      NOT NULL,
-  result     ENUM('valid','already_used','cancelled','invalid') NOT NULL,
-  scanned_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_scans_ticket (ticket_id),
-  KEY idx_scans_scanned_at (scanned_at),
-  CONSTRAINT fk_scans_ticket FOREIGN KEY (ticket_id)  REFERENCES tickets (id) ON DELETE SET NULL,
-  CONSTRAINT fk_scans_user   FOREIGN KEY (scanned_by) REFERENCES users (id)  ON DELETE SET NULL
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          CHAR(36)    NOT NULL PRIMARY KEY,
+  actor_id    CHAR(36)    NULL,
+  action      VARCHAR(60) NOT NULL,     -- 'ticket.create','ticket.resend_email','user.create',…
+  entity_type VARCHAR(40) NOT NULL,
+  entity_id   CHAR(36)    NULL,
+  metadata    JSON        NULL,
+  created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_audit_actor (actor_id),
+  CONSTRAINT fk_audit_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ------------------------------------------------------------
--- Configuracion de la aplicacion (clave/valor)
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS app_settings (
-  setting_key   VARCHAR(60)  NOT NULL,
-  setting_value VARCHAR(255) NOT NULL,
-  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (setting_key)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- ============================================================
--- SEEDS
--- ============================================================
-
--- Limite global de entradas del evento
-INSERT INTO app_settings (setting_key, setting_value)
-VALUES ('total_tickets', '600')
-ON DUPLICATE KEY UPDATE setting_key = setting_key;
-
-INSERT INTO app_settings (setting_key, setting_value)
-VALUES ('event_name', 'FLAGS FEST')
-ON DUPLICATE KEY UPDATE setting_key = setting_key;
-
--- Simbolo de moneda usado en PDF, correos y reportes
-INSERT INTO app_settings (setting_key, setting_value)
-VALUES ('currency_symbol', 'S/')
-ON DUPLICATE KEY UPDATE setting_key = setting_key;
-
--- Usuario administrador inicial
---   email:    admin@flagsfest.com
---   password: FlagsFest2026
--- (cambia la contrasena despues del primer inicio de sesion)
-INSERT INTO users (name, email, password_hash, role, quota, is_active)
-SELECT 'Administrador', 'admin@flagsfest.com',
-       '$2a$10$FPyT1JC/nZFLtqK/CvYsBeMr9XnzxSAIDYBGDXbes1r9j4Uacjaa2',
-       'admin', 0, 1
-WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin');
-
--- Fases de venta base (editables desde el panel)
-INSERT INTO sale_phases (name, price, start_date, end_date, is_active)
-SELECT 'Primera preventa', 25.00, '2026-07-01 00:00:00', '2026-07-15 23:59:59', 1
-WHERE NOT EXISTS (SELECT 1 FROM sale_phases WHERE name = 'Primera preventa');
-
-INSERT INTO sale_phases (name, price, start_date, end_date, is_active)
-SELECT 'Segunda preventa', 35.00, '2026-07-16 00:00:00', '2026-07-29 23:59:59', 1
-WHERE NOT EXISTS (SELECT 1 FROM sale_phases WHERE name = 'Segunda preventa');
-
-INSERT INTO sale_phases (name, price, start_date, end_date, is_active)
-SELECT 'Dia del evento', 45.00, '2026-07-30 00:00:00', '2026-07-30 23:59:59', 1
-WHERE NOT EXISTS (SELECT 1 FROM sale_phases WHERE name = 'Dia del evento');

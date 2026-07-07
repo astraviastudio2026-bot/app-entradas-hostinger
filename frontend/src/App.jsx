@@ -1,30 +1,32 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { api, clearSession, getCurrency, getStoredUser, getToken, setSession } from './api';
-import { ToastProvider } from './components.jsx';
+import { api, getStoredUser, storeUser } from './api';
+import { ToastProvider, ROLE_LABELS } from './components.jsx';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
-import Sellers from './pages/Sellers.jsx';
-import Phases from './pages/Phases.jsx';
-import SellTicket from './pages/SellTicket.jsx';
+import Users from './pages/Users.jsx';
+import Evento from './pages/Evento.jsx';
+import Sell from './pages/Sell.jsx';
 import Tickets from './pages/Tickets.jsx';
 import TicketDetail from './pages/TicketDetail.jsx';
-import Reports from './pages/Reports.jsx';
 import Scanner from './pages/Scanner.jsx';
+import ValidatePublic from './pages/ValidatePublic.jsx';
 
 const AuthContext = createContext(null);
 export function useAuth() {
   return useContext(AuthContext);
 }
 
+// Ruta de inicio según el rol (coincide con redirectTo del backend)
+export const HOME_BY_ROLE = { admin: '/admin', seller: '/seller', validator: '/scanner' };
+
 const NAV_ITEMS = [
-  { to: '/', label: 'Inicio', icon: '⌂', roles: ['admin', 'seller'] },
-  { to: '/vender', label: 'Vender', icon: '＋', roles: ['admin', 'seller'] },
+  { to: '/admin', label: 'Inicio', icon: '⌂', roles: ['admin'] },
+  { to: '/seller', label: 'Vender', icon: '＋', roles: ['admin', 'seller'] },
   { to: '/entradas', label: 'Entradas', icon: '▤', roles: ['admin', 'seller'] },
-  { to: '/scanner', label: 'Scanner', icon: '▣', roles: ['admin'] },
-  { to: '/vendedores', label: 'Vendedores', icon: '☺', roles: ['admin'] },
-  { to: '/fases', label: 'Fases', icon: '◔', roles: ['admin'] },
-  { to: '/reportes', label: 'Reportes', icon: '≡', roles: ['admin'] },
+  { to: '/scanner', label: 'Scanner', icon: '▣', roles: ['admin', 'validator'] },
+  { to: '/usuarios', label: 'Usuarios', icon: '☺', roles: ['admin'] },
+  { to: '/evento', label: 'Evento', icon: '◔', roles: ['admin'] },
 ];
 
 function Layout({ children }) {
@@ -41,7 +43,7 @@ function Layout({ children }) {
         </div>
         <nav className="side-nav">
           {items.map((i) => (
-            <NavLink key={i.to} to={i.to} end={i.to === '/'} className="nav-link">
+            <NavLink key={i.to} to={i.to} className="nav-link">
               <span className="nav-icon">{i.icon}</span>
               {i.label}
             </NavLink>
@@ -49,10 +51,10 @@ function Layout({ children }) {
         </nav>
         <div className="sidebar-footer">
           <div className="user-chip">
-            <div className="user-avatar">{user.name.slice(0, 1).toUpperCase()}</div>
+            <div className="user-avatar">{user.full_name.slice(0, 1).toUpperCase()}</div>
             <div className="user-meta">
-              <strong>{user.name}</strong>
-              <span>{user.role === 'admin' ? 'Administrador' : 'Vendedor'}</span>
+              <strong>{user.full_name}</strong>
+              <span>{ROLE_LABELS[user.role] || user.role}</span>
             </div>
           </div>
           <button type="button" className="btn btn-ghost btn-block" onClick={logout}>
@@ -72,7 +74,7 @@ function Layout({ children }) {
             <span className="brand-fest">FEST</span>
           </div>
           <span className="topbar-title">
-            {items.find((i) => (i.to === '/' ? location.pathname === '/' : location.pathname.startsWith(i.to)))?.label || ''}
+            {items.find((i) => location.pathname.startsWith(i.to))?.label || ''}
           </span>
           <button type="button" className="icon-btn" onClick={logout} title="Cerrar sesión">⏻</button>
         </header>
@@ -81,7 +83,7 @@ function Layout({ children }) {
 
         <nav className="bottom-nav">
           {items.slice(0, 5).map((i) => (
-            <NavLink key={i.to} to={i.to} end={i.to === '/'} className="bottom-link">
+            <NavLink key={i.to} to={i.to} className="bottom-link">
               <span className="nav-icon">{i.icon}</span>
               <span>{i.label}</span>
             </NavLink>
@@ -92,36 +94,46 @@ function Layout({ children }) {
   );
 }
 
-function Protected({ children, adminOnly = false }) {
+function Protected({ children, roles }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="page-loading">FLAGS FEST</div>;
   if (!user) return <Navigate to="/login" replace />;
-  if (adminOnly && user.role !== 'admin') return <Navigate to="/" replace />;
+  if (roles && !roles.includes(user.role)) {
+    return <Navigate to={HOME_BY_ROLE[user.role] || '/login'} replace />;
+  }
   return <Layout>{children}</Layout>;
+}
+
+function HomeRedirect() {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="page-loading">FLAGS FEST</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return <Navigate to={HOME_BY_ROLE[user.role] || '/login'} replace />;
 }
 
 export default function App() {
   const [user, setUser] = useState(getStoredUser());
-  const [currency, setCurrency] = useState(getCurrency());
-  const [loading, setLoading] = useState(Boolean(getToken()));
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Revalida la sesion guardada al abrir la app
-    if (!getToken()) return;
-    api('/me')
+    // Revalida la sesión de la cookie al abrir la app
+    api('/auth/me')
       .then((data) => {
         setUser(data.user);
-        setCurrency(data.currency || 'S/');
+        storeUser(data.user);
       })
-      .catch(() => setUser(null))
+      .catch(() => {
+        setUser(null);
+        storeUser(null);
+      })
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
     const onUnauthorized = () => {
       setUser(null);
-      navigate('/login');
+      if (!window.location.pathname.startsWith('/ticket/validate/')) navigate('/login');
     };
     window.addEventListener('ff-unauthorized', onUnauthorized);
     return () => window.removeEventListener('ff-unauthorized', onUnauthorized);
@@ -129,36 +141,40 @@ export default function App() {
 
   const value = useMemo(() => ({
     user,
-    currency,
     loading,
-    login: async (email, password) => {
-      const data = await api('/login', { method: 'POST', body: { email, password } });
-      setSession(data.token, data.user, data.currency);
+    login: async (username, password) => {
+      const data = await api('/auth/login', { method: 'POST', body: { username, password } });
       setUser(data.user);
-      setCurrency(data.currency || 'S/');
-      return data.user;
+      storeUser(data.user);
+      return data;
     },
-    logout: () => {
-      clearSession();
+    logout: async () => {
+      try {
+        await api('/auth/logout', { method: 'POST' });
+      } catch { /* la cookie igual expira */ }
       setUser(null);
+      storeUser(null);
       navigate('/login');
     },
-  }), [user, currency, loading, navigate]);
+  }), [user, loading, navigate]);
 
   return (
     <AuthContext.Provider value={value}>
       <ToastProvider>
         <Routes>
-          <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
-          <Route path="/" element={<Protected><Dashboard /></Protected>} />
-          <Route path="/vender" element={<Protected><SellTicket /></Protected>} />
-          <Route path="/entradas" element={<Protected><Tickets /></Protected>} />
-          <Route path="/entradas/:id" element={<Protected><TicketDetail /></Protected>} />
-          <Route path="/vendedores" element={<Protected adminOnly><Sellers /></Protected>} />
-          <Route path="/fases" element={<Protected adminOnly><Phases /></Protected>} />
-          <Route path="/reportes" element={<Protected adminOnly><Reports /></Protected>} />
-          <Route path="/scanner" element={<Protected adminOnly><Scanner /></Protected>} />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* pública: abrir el QR jamás valida la entrada */}
+          <Route path="/ticket/validate/:token" element={<ValidatePublic />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/" element={<HomeRedirect />} />
+          <Route path="/admin" element={<Protected roles={['admin']}><Dashboard /></Protected>} />
+          <Route path="/seller" element={<Protected roles={['admin', 'seller']}><Sell /></Protected>} />
+          <Route path="/vender" element={<Navigate to="/seller" replace />} />
+          <Route path="/entradas" element={<Protected roles={['admin', 'seller']}><Tickets /></Protected>} />
+          <Route path="/entradas/:id" element={<Protected roles={['admin', 'seller']}><TicketDetail /></Protected>} />
+          <Route path="/usuarios" element={<Protected roles={['admin']}><Users /></Protected>} />
+          <Route path="/evento" element={<Protected roles={['admin']}><Evento /></Protected>} />
+          <Route path="/scanner" element={<Protected roles={['admin', 'validator']}><Scanner /></Protected>} />
+          <Route path="*" element={<HomeRedirect />} />
         </Routes>
       </ToastProvider>
     </AuthContext.Provider>

@@ -1,22 +1,24 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../App.jsx';
+import { Navigate, useNavigate } from 'react-router-dom';
+import { useAuth, HOME_BY_ROLE } from '../App.jsx';
 
 export default function Login() {
-  const { login } = useAuth();
+  const { login, user, loading } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  if (!loading && user) return <Navigate to={HOME_BY_ROLE[user.role] || '/'} replace />;
 
   const submit = async (e) => {
     e.preventDefault();
     setError('');
     setBusy(true);
     try {
-      await login(email.trim(), password);
-      navigate('/');
+      const data = await login(username.trim(), password);
+      navigate(data.redirectTo || '/');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -40,13 +42,14 @@ export default function Login() {
 
         <form onSubmit={submit} className="login-form">
           <label className="field">
-            <span>Correo</span>
+            <span>Usuario</span>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="tucorreo@ejemplo.com"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="vendedor1"
               autoComplete="username"
+              autoCapitalize="none"
               required
             />
           </label>

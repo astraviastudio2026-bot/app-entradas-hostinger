@@ -31,27 +31,37 @@ export const STATUS_LABELS = {
   cancelled: 'Anulada',
 };
 
-export function fmtMoney(value, currency) {
-  return `${currency} ${Number(value || 0).toFixed(2)}`;
+// Moneda del evento (Ecuador usa USD)
+export const CURRENCY = '$';
+
+export function fmtMoney(value) {
+  return `${CURRENCY} ${Number(value || 0).toFixed(2)}`;
 }
 
-export function fmtDate(value) {
+// Fechas siempre en hora de Ecuador (America/Guayaquil); la BD guarda UTC.
+export function fmtDate(value, { withTime = true } = {}) {
   if (!value) return '—';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString('es-PE', {
-    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
+  const opts = { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', year: 'numeric' };
+  if (withTime) Object.assign(opts, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toLocaleString('es-EC', opts);
 }
 
-// Convierte fecha de MySQL a valor para <input type="datetime-local">
-export function toInputDateTime(value) {
+// Fecha UTC -> 'YYYY-MM-DD' del día correspondiente en Ecuador
+// (para <input type="date">).
+export function toInputDate(value) {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
 }
+
+export const ROLE_LABELS = {
+  admin: 'Administrador',
+  seller: 'Vendedor',
+  validator: 'Control de acceso',
+};
 
 export function ColorDot({ color }) {
   const c = TICKET_COLORS[color];
