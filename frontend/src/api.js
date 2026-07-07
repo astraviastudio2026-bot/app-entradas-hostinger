@@ -37,7 +37,13 @@ export async function api(path, { method = 'GET', body } = {}) {
     window.dispatchEvent(new Event('ff-unauthorized'));
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+  if (!res.ok) {
+    // err.data conserva la respuesta completa (p. ej. can_use_next_phase
+    // al aprobar una compra cuya fase agotó su cupo).
+    const err = new Error(data.error || `Error ${res.status}`);
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 

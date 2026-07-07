@@ -6,7 +6,7 @@ const { requireAuth, requireRole } = require('../middleware');
 const { ah, uuid, normalizeUsername, isValidEmail } = require('../utils');
 const { ecDayStartUtc, ecDayEndUtc, DATE_RE } = require('../time');
 const { getActiveEvent, getCurrentPhase } = require('../queries');
-const { savePaymentQr, deleteStoredFile } = require('../storage');
+const { savePaymentMethodQr, deleteStoredFile, readStoredFile } = require('../storage');
 const { audit } = require('../audit');
 
 const router = express.Router();
@@ -205,6 +205,16 @@ router.post('/phases', ah(async (req, res) => {
   if (!Number.isInteger(orderNum) || orderNum < 1) {
     return res.status(422).json({ error: 'El orden de la fase debe ser un entero mayor o igual a 1' });
   }
+  // El orden define la secuencia del auto-avance: no puede repetirse.
+  const [dupOrder] = await pool.query(
+    'SELECT name FROM sale_phases WHERE event_id = ? AND phase_order = ? AND id <> ? LIMIT 1',
+    [event.id, orderNum, id || '']
+  );
+  if (dupOrder.length) {
+    return res.status(422).json({
+      error: `La fase "${dupOrder[0].name}" ya usa el orden ${orderNum}. Cada fase debe tener un orden único.`,
+    });
+  }
   const priceNum = Number(price);
   if (price === '' || price == null || Number.isNaN(priceNum) || priceNum < 0) {
     return res.status(422).json({ error: 'El precio de la fase es obligatorio (número mayor o igual a 0)' });
@@ -370,7 +380,7 @@ router.get('/dashboard', ah(async (req, res) => {
     [event.id]
   );
   const [byPhase] = await pool.query(
-    `SELECT p.id, p.name, p.price, p.max_tickets, p.is_active,
+    `SELECT p.id, p.name, p.price, p.max_tickets, p.is_active, p.phase_order, p.starts_at, p.ends_at,
             COALESCE(SUM(t.status <> 'cancelled'), 0) AS sold,
             COALESCE(SUM(IF(t.status <> 'cancelled', t.price, 0)), 0) AS revenue
      FROM sale_phases p
@@ -421,8 +431,10 @@ router.get('/dashboard', ah(async (req, res) => {
 }));
 
 // ------------------------------------------------------------
-// Configuración de pagos / venta web (datos de transferencia que
-// ve el público en /comprar). Una fila por evento activo.
+// Venta web: MÉTODOS DE PAGO (varios bancos, cada uno con su QR)
+// + configuración general (switch de venta pública y mensaje).
+// Los campos bancarios de payment_settings quedaron legacy: los
+// bancos viven en payment_methods.
 // ------------------------------------------------------------
 const QR_IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 const qrUpload = multer({
@@ -442,28 +454,35 @@ function uploadQrImage(req, res, next) {
   });
 }
 
-router.get('/payment-settings', ah(async (req, res) => {
+// Detecta el MIME real por firma binaria (un ejecutable renombrado no pasa)
+function sniffImageMime(b) {
+  if (!b || b.length < 12) return null;
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.slice(0, 4).toString('ascii') === 'RIFF' && b.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+router.get('/payment-methods', ah(async (req, res) => {
   const event = await getActiveEvent();
-  if (!event) return res.json({ settings: null, event_id: null });
-  const [rows] = await pool.query('SELECT * FROM payment_settings WHERE event_id = ?', [event.id]);
-  const s = rows[0] || null;
+  if (!event) return res.json({ methods: [], event_id: null });
+  const [rows] = await pool.query(
+    `SELECT m.id, m.bank_name, m.account_type, m.account_number, m.account_holder,
+            m.account_document, m.transfer_note, m.is_active, m.sort_order,
+            (m.qr_image_path IS NOT NULL) AS has_qr_image,
+            (SELECT COUNT(*) FROM purchase_requests r WHERE r.payment_method_id = m.id) AS requests_count
+     FROM payment_methods m WHERE m.event_id = ?
+     ORDER BY m.sort_order ASC, m.created_at ASC`,
+    [event.id]
+  );
   res.json({
     event_id: event.id,
-    settings: s ? {
-      bank_name: s.bank_name,
-      account_type: s.account_type,
-      account_number: s.account_number,
-      account_holder: s.account_holder,
-      account_document: s.account_document,
-      transfer_note: s.transfer_note,
-      buyer_message: s.buyer_message,
-      public_sales_enabled: Boolean(s.public_sales_enabled),
-      has_qr_image: Boolean(s.qr_image_path),
-    } : null,
+    methods: rows.map((m) => ({ ...m, is_active: Boolean(m.is_active), has_qr_image: Boolean(m.has_qr_image) })),
   });
 }));
 
-router.post('/payment-settings', uploadQrImage, ah(async (req, res) => {
+// Crear o editar método (multipart: campos + qr_image opcional)
+router.post('/payment-methods', uploadQrImage, ah(async (req, res) => {
   const event = await getActiveEvent();
   if (!event) return res.status(409).json({ error: 'No hay evento activo configurado.' });
 
@@ -472,6 +491,7 @@ router.post('/payment-settings', uploadQrImage, ah(async (req, res) => {
     const s = String(v == null ? '' : v).trim().slice(0, max);
     return s || null;
   };
+  const id = clean(body.id, 36);
   const values = {
     bank_name: clean(body.bank_name, 120),
     account_type: clean(body.account_type, 60),
@@ -479,59 +499,190 @@ router.post('/payment-settings', uploadQrImage, ah(async (req, res) => {
     account_holder: clean(body.account_holder, 120),
     account_document: clean(body.account_document, 30),
     transfer_note: clean(body.transfer_note, 300),
-    buyer_message: clean(body.buyer_message, 500),
   };
-  const salesEnabled = ['1', 'true', 'on'].includes(String(body.public_sales_enabled)) ? 1 : 0;
-
-  // Para habilitar la venta pública deben existir los datos mínimos
-  // de la transferencia (si no, el comprador no sabría a dónde pagar).
-  if (salesEnabled && (!values.bank_name || !values.account_number || !values.account_holder)) {
-    return res.status(422).json({
-      error: 'Para activar la venta web completa al menos banco, número de cuenta y titular.',
-    });
+  if (!values.bank_name || !values.account_number || !values.account_holder) {
+    return res.status(422).json({ error: 'Banco, número de cuenta y titular son obligatorios.' });
   }
+  const isActive = ['1', 'true', 'on'].includes(String(body.is_active)) ? 1 : 0;
+  let sortOrder = Number(body.sort_order);
+  if (!Number.isInteger(sortOrder) || sortOrder < 1) sortOrder = null; // se calcula abajo
 
-  // Imagen QR de pago (opcional): validar firma binaria real.
-  let qrImagePath;
-  let qrImageMime;
+  // QR propio del método (opcional)
+  let qrBuffer = null;
+  let qrMime = null;
   if (req.file && req.file.buffer && req.file.buffer.length) {
-    const b = req.file.buffer;
-    let mime = null;
-    if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) mime = 'image/jpeg';
-    else if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) mime = 'image/png';
-    else if (b.length > 12 && b.slice(0, 4).toString('ascii') === 'RIFF' && b.slice(8, 12).toString('ascii') === 'WEBP') mime = 'image/webp';
-    if (!mime || !QR_IMAGE_TYPES[mime]) {
+    qrMime = sniffImageMime(req.file.buffer);
+    if (!qrMime || !QR_IMAGE_TYPES[qrMime]) {
       return res.status(422).json({ error: 'La imagen QR de pago debe ser JPG, PNG o WEBP.' });
     }
-    qrImagePath = await savePaymentQr(event.id, QR_IMAGE_TYPES[mime], b);
-    qrImageMime = mime;
+    qrBuffer = req.file.buffer;
   }
   const removeQr = ['1', 'true', 'on'].includes(String(body.remove_qr_image));
 
-  const [existing] = await pool.query('SELECT id, qr_image_path FROM payment_settings WHERE event_id = ?', [event.id]);
-  if (existing.length) {
+  if (id) {
+    const [rows] = await pool.query(
+      'SELECT id, qr_image_path FROM payment_methods WHERE id = ? AND event_id = ?',
+      [id, event.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Método de pago no encontrado' });
+
     const sets = ['bank_name = ?', 'account_type = ?', 'account_number = ?', 'account_holder = ?',
-      'account_document = ?', 'transfer_note = ?', 'buyer_message = ?', 'public_sales_enabled = ?'];
+      'account_document = ?', 'transfer_note = ?', 'is_active = ?'];
     const params = [values.bank_name, values.account_type, values.account_number, values.account_holder,
-      values.account_document, values.transfer_note, values.buyer_message, salesEnabled];
-    if (qrImagePath) {
+      values.account_document, values.transfer_note, isActive];
+    if (sortOrder != null) { sets.push('sort_order = ?'); params.push(sortOrder); }
+    if (qrBuffer) {
+      const file = await savePaymentMethodQr(event.id, id, QR_IMAGE_TYPES[qrMime], qrBuffer);
       sets.push('qr_image_path = ?', 'qr_image_mime = ?');
-      params.push(qrImagePath, qrImageMime);
-    } else if (removeQr) {
+      params.push(file, qrMime);
+    } else if (removeQr && rows[0].qr_image_path) {
+      await deleteStoredFile(rows[0].qr_image_path);
       sets.push('qr_image_path = NULL', 'qr_image_mime = NULL');
-      if (existing[0].qr_image_path) await deleteStoredFile(existing[0].qr_image_path);
     }
-    params.push(existing[0].id);
-    await pool.query(`UPDATE payment_settings SET ${sets.join(', ')} WHERE id = ?`, params);
+    params.push(id);
+    await pool.query(`UPDATE payment_methods SET ${sets.join(', ')} WHERE id = ?`, params);
+    await audit(pool, { actorId: req.user.id, action: 'payment_method.update', entityType: 'payment_method', entityId: id, metadata: { bank_name: values.bank_name, is_active: Boolean(isActive) } });
+    return res.json({ ok: true, id, message: `Método "${values.bank_name}" actualizado` });
+  }
+
+  const methodId = uuid();
+  if (sortOrder == null) {
+    const [[{ maxOrder }]] = await pool.query(
+      'SELECT COALESCE(MAX(sort_order), 0) AS maxOrder FROM payment_methods WHERE event_id = ?',
+      [event.id]
+    );
+    sortOrder = Number(maxOrder) + 1;
+  }
+  let qrPath = null;
+  if (qrBuffer) qrPath = await savePaymentMethodQr(event.id, methodId, QR_IMAGE_TYPES[qrMime], qrBuffer);
+  await pool.query(
+    `INSERT INTO payment_methods
+       (id, event_id, bank_name, account_type, account_number, account_holder, account_document,
+        transfer_note, qr_image_path, qr_image_mime, is_active, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [methodId, event.id, values.bank_name, values.account_type, values.account_number, values.account_holder,
+      values.account_document, values.transfer_note, qrPath, qrBuffer ? qrMime : null, isActive, sortOrder]
+  );
+  await audit(pool, { actorId: req.user.id, action: 'payment_method.create', entityType: 'payment_method', entityId: methodId, metadata: { bank_name: values.bank_name } });
+  return res.status(201).json({ ok: true, id: methodId, message: `Método "${values.bank_name}" creado` });
+}));
+
+router.post('/payment-methods/:id/toggle', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.status(409).json({ error: 'No hay evento activo configurado.' });
+  const [rows] = await pool.query(
+    'SELECT id, bank_name, is_active FROM payment_methods WHERE id = ? AND event_id = ?',
+    [String(req.params.id), event.id]
+  );
+  const method = rows[0];
+  if (!method) return res.status(404).json({ error: 'Método de pago no encontrado' });
+  const newState = method.is_active ? 0 : 1;
+  await pool.query('UPDATE payment_methods SET is_active = ? WHERE id = ?', [newState, method.id]);
+  await audit(pool, { actorId: req.user.id, action: newState ? 'payment_method.activate' : 'payment_method.deactivate', entityType: 'payment_method', entityId: method.id, metadata: { bank_name: method.bank_name } });
+  res.json({
+    ok: true,
+    is_active: Boolean(newState),
+    message: `Método "${method.bank_name}" ${newState ? 'activado' : 'desactivado'}`,
+  });
+}));
+
+// Eliminar un método SOLO si ninguna solicitud lo referencia (si ya
+// tiene movimientos, se desactiva para conservar la contabilidad).
+router.delete('/payment-methods/:id', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.status(409).json({ error: 'No hay evento activo configurado.' });
+  const [rows] = await pool.query(
+    'SELECT id, bank_name, qr_image_path FROM payment_methods WHERE id = ? AND event_id = ?',
+    [String(req.params.id), event.id]
+  );
+  const method = rows[0];
+  if (!method) return res.status(404).json({ error: 'Método de pago no encontrado' });
+  const [[{ used }]] = await pool.query(
+    'SELECT COUNT(*) AS used FROM purchase_requests WHERE payment_method_id = ?',
+    [method.id]
+  );
+  if (Number(used) > 0) {
+    return res.status(409).json({
+      error: `"${method.bank_name}" ya tiene ${used} solicitud(es) asociadas: desactívalo en lugar de eliminarlo para conservar la contabilidad.`,
+    });
+  }
+  if (method.qr_image_path) await deleteStoredFile(method.qr_image_path);
+  await pool.query('DELETE FROM payment_methods WHERE id = ?', [method.id]);
+  await audit(pool, { actorId: req.user.id, action: 'payment_method.delete', entityType: 'payment_method', entityId: method.id, metadata: { bank_name: method.bank_name } });
+  res.json({ ok: true, message: `Método "${method.bank_name}" eliminado` });
+}));
+
+// Imagen QR de un método para el panel (incluye métodos inactivos)
+router.get('/payment-methods/:id/qr', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.status(404).json({ error: 'No disponible' });
+  const [rows] = await pool.query(
+    'SELECT qr_image_path, qr_image_mime FROM payment_methods WHERE id = ? AND event_id = ?',
+    [String(req.params.id), event.id]
+  );
+  const method = rows[0];
+  if (!method || !method.qr_image_path) return res.status(404).json({ error: 'No disponible' });
+  const buffer = await readStoredFile(method.qr_image_path);
+  if (!buffer) return res.status(404).json({ error: 'No disponible' });
+  res.setHeader('Content-Type', method.qr_image_mime || 'image/png');
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.send(buffer);
+}));
+
+// ------------------------------------------------------------
+// Configuración general de la venta web: switch + mensaje.
+// ------------------------------------------------------------
+router.get('/payment-settings', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.json({ settings: null, event_id: null });
+  const [rows] = await pool.query('SELECT * FROM payment_settings WHERE event_id = ?', [event.id]);
+  const s = rows[0] || null;
+  const [[{ activeMethods }]] = await pool.query(
+    'SELECT COUNT(*) AS activeMethods FROM payment_methods WHERE event_id = ? AND is_active = 1',
+    [event.id]
+  );
+  res.json({
+    event_id: event.id,
+    active_methods: Number(activeMethods) || 0,
+    settings: s ? {
+      buyer_message: s.buyer_message,
+      public_sales_enabled: Boolean(s.public_sales_enabled),
+    } : null,
+  });
+}));
+
+router.post('/payment-settings', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.status(409).json({ error: 'No hay evento activo configurado.' });
+
+  const body = req.body || {};
+  const buyerMessage = String(body.buyer_message == null ? '' : body.buyer_message).trim().slice(0, 500) || null;
+  const salesEnabled = body.public_sales_enabled === true || ['1', 'true', 'on'].includes(String(body.public_sales_enabled)) ? 1 : 0;
+
+  // Para habilitar la venta pública debe existir al menos un método
+  // de pago activo (si no, el comprador no sabría a dónde pagar).
+  if (salesEnabled) {
+    const [[{ activeMethods }]] = await pool.query(
+      'SELECT COUNT(*) AS activeMethods FROM payment_methods WHERE event_id = ? AND is_active = 1',
+      [event.id]
+    );
+    if (!Number(activeMethods)) {
+      return res.status(422).json({
+        error: 'Para activar la venta web agrega y activa al menos un banco/método de pago.',
+      });
+    }
+  }
+
+  const [existing] = await pool.query('SELECT id FROM payment_settings WHERE event_id = ?', [event.id]);
+  if (existing.length) {
+    await pool.query(
+      'UPDATE payment_settings SET buyer_message = ?, public_sales_enabled = ? WHERE id = ?',
+      [buyerMessage, salesEnabled, existing[0].id]
+    );
   } else {
     await pool.query(
-      `INSERT INTO payment_settings
-         (id, event_id, bank_name, account_type, account_number, account_holder, account_document,
-          transfer_note, buyer_message, public_sales_enabled, qr_image_path, qr_image_mime)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [uuid(), event.id, values.bank_name, values.account_type, values.account_number, values.account_holder,
-        values.account_document, values.transfer_note, values.buyer_message, salesEnabled,
-        qrImagePath || null, qrImageMime || null]
+      'INSERT INTO payment_settings (id, event_id, buyer_message, public_sales_enabled) VALUES (?, ?, ?, ?)',
+      [uuid(), event.id, buyerMessage, salesEnabled]
     );
   }
 
@@ -540,7 +691,7 @@ router.post('/payment-settings', uploadQrImage, ah(async (req, res) => {
     action: 'payment_settings.update',
     entityType: 'payment_settings',
     entityId: event.id,
-    metadata: { public_sales_enabled: Boolean(salesEnabled), bank_name: values.bank_name },
+    metadata: { public_sales_enabled: Boolean(salesEnabled) },
   });
   res.json({
     ok: true,

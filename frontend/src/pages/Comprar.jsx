@@ -39,6 +39,7 @@ export default function Comprar() {
   const [phone, setPhone] = useState('');
   const [documentId, setDocumentId] = useState('');
   const [color, setColor] = useState('');
+  const [payMethodId, setPayMethodId] = useState('');
   const [notes, setNotes] = useState('');
   const [file, setFile] = useState(null);
   const [filePreview, setFilePreview] = useState('');
@@ -59,7 +60,13 @@ export default function Comprar() {
   const event = info?.event || null;
   const phase = info?.phase || null;
   const payment = info?.payment || null;
+  const payMethods = payment?.methods || [];
   const salesOpen = Boolean(info?.sales_enabled && phase && !info?.sold_out);
+
+  // Si solo hay un banco, queda preseleccionado.
+  useEffect(() => {
+    if (payMethods.length === 1) setPayMethodId(payMethods[0].id);
+  }, [payMethods.length]);
 
   const eventDateText = useMemo(() => (event ? fmtDateOnly(event.event_date) : ''), [event]);
 
@@ -96,6 +103,7 @@ export default function Comprar() {
     if (!EMAIL_RE.test(email.trim())) return setError('El correo electrónico no es válido.');
     if (!PHONE_RE.test(phone.trim())) return setError('Escribe un teléfono o WhatsApp válido.');
     if (!color) return setError('Selecciona tu tipo de entrada.');
+    if (!payMethodId) return setError('Selecciona el banco al que hiciste tu transferencia.');
     if (!file) return setError('Adjunta la captura o comprobante de tu transferencia.');
 
     setBusy(true);
@@ -106,6 +114,7 @@ export default function Comprar() {
       fd.append('buyer_phone', phone.trim());
       if (documentId.trim()) fd.append('buyer_document', documentId.trim());
       fd.append('selected_color', color);
+      fd.append('payment_method_id', payMethodId);
       if (notes.trim()) fd.append('notes', notes.trim());
       fd.append('payment_proof', file);
       const data = await apiForm('/public/purchase', fd);
@@ -154,7 +163,7 @@ export default function Comprar() {
                 onClick={() => {
                   setSuccess(null);
                   setName(''); setEmail(''); setPhone(''); setDocumentId('');
-                  setColor(''); setNotes(''); setFile(null); setFilePreview('');
+                  setColor(''); setPayMethodId(''); setNotes(''); setFile(null); setFilePreview('');
                   if (fileInputRef.current) fileInputRef.current.value = '';
                 }}
               >
@@ -232,40 +241,50 @@ export default function Comprar() {
               </p>
             </section>
 
-            {/* ---------- DATOS DE TRANSFERENCIA ---------- */}
-            {salesOpen && payment ? (
+            {/* ---------- MÉTODOS DE PAGO / DATOS DE TRANSFERENCIA ---------- */}
+            {salesOpen && payMethods.length ? (
               <section className="pub-section">
                 <h2 className="pub-section-title">DATOS PARA TU TRANSFERENCIA</h2>
-                <div className="pub-card pub-bank">
-                  {payment.buyer_message ? <p className="pub-bank-msg">{payment.buyer_message}</p> : null}
-                  <div className="pub-bank-rows">
-                    {payment.bank_name ? (
-                      <div className="pub-bank-row"><span>Banco</span><strong>{payment.bank_name}</strong></div>
-                    ) : null}
-                    {payment.account_type ? (
-                      <div className="pub-bank-row"><span>Tipo de cuenta</span><strong>{payment.account_type}</strong></div>
-                    ) : null}
-                    {payment.account_number ? (
-                      <div className="pub-bank-row">
-                        <span>Nº de cuenta</span>
-                        <strong className="pub-account">{payment.account_number}</strong>
-                        <CopyButton value={payment.account_number} />
+                {payment.buyer_message ? (
+                  <p className="pub-bank-msg" style={{ marginBottom: 16 }}>{payment.buyer_message}</p>
+                ) : null}
+                <div className="pub-methods-grid">
+                  {payMethods.map((m) => {
+                    const fullData = [
+                      `Banco: ${m.bank_name}`,
+                      m.account_type ? `Tipo de cuenta: ${m.account_type}` : null,
+                      `Nº de cuenta: ${m.account_number}`,
+                      `Titular: ${m.account_holder}`,
+                      m.account_document ? `Cédula/RUC: ${m.account_document}` : null,
+                    ].filter(Boolean).join('\n');
+                    return (
+                      <div key={m.id} className="pub-card pub-bank pub-method-card">
+                        <div className="pub-method-head">
+                          <span className="pub-method-bank">{m.bank_name}</span>
+                          {m.account_type ? <span className="pub-method-type">{m.account_type}</span> : null}
+                        </div>
+                        <div className="pub-bank-rows">
+                          <div className="pub-bank-row">
+                            <span>Nº de cuenta</span>
+                            <strong className="pub-account">{m.account_number}</strong>
+                            <CopyButton value={m.account_number} />
+                          </div>
+                          <div className="pub-bank-row"><span>Titular</span><strong>{m.account_holder}</strong></div>
+                          {m.account_document ? (
+                            <div className="pub-bank-row"><span>Cédula / RUC</span><strong>{m.account_document}</strong></div>
+                          ) : null}
+                        </div>
+                        {m.transfer_note ? <p className="pub-bank-note">⚠ {m.transfer_note}</p> : null}
+                        {m.has_qr_image ? (
+                          <div className="pub-bank-qr">
+                            <img src={`/api/public/payment-qr/${m.id}`} alt={`QR de pago ${m.bank_name}`} loading="lazy" />
+                            <span className="pub-muted-sm">Escanea para pagar en {m.bank_name}</span>
+                          </div>
+                        ) : null}
+                        <CopyButton value={fullData} label="Copiar todos los datos" />
                       </div>
-                    ) : null}
-                    {payment.account_holder ? (
-                      <div className="pub-bank-row"><span>Titular</span><strong>{payment.account_holder}</strong></div>
-                    ) : null}
-                    {payment.account_document ? (
-                      <div className="pub-bank-row"><span>Cédula / RUC</span><strong>{payment.account_document}</strong></div>
-                    ) : null}
-                  </div>
-                  {payment.transfer_note ? <p className="pub-bank-note">⚠ {payment.transfer_note}</p> : null}
-                  {payment.has_qr_image ? (
-                    <div className="pub-bank-qr">
-                      <img src="/api/public/payment-qr" alt="QR de pago" loading="lazy" />
-                      <span className="pub-muted-sm">Escanea para pagar</span>
-                    </div>
-                  ) : null}
+                    );
+                  })}
                 </div>
               </section>
             ) : null}
@@ -348,6 +367,23 @@ export default function Comprar() {
                         <span className="pub-flag-name">{FLAG_LABELS[c.key]}</span>
                         <span className="pub-flag-concept">{c.concept}</span>
                         <span className="pub-flag-desc">{c.description}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <span className="pub-field-label">¿A qué banco hiciste tu transferencia? *</span>
+                  <div className="pub-pay-picker">
+                    {payMethods.map((m) => (
+                      <button
+                        key={m.id}
+                        type="button"
+                        className={`pub-pay-option${payMethodId === m.id ? ' selected' : ''}`}
+                        onClick={() => setPayMethodId(m.id)}
+                      >
+                        <span className="pub-pay-bank">{m.bank_name}</span>
+                        <span className="pub-pay-sub">
+                          {[m.account_type, m.account_number].filter(Boolean).join(' · ')}
+                        </span>
                       </button>
                     ))}
                   </div>

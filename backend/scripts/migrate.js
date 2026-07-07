@@ -66,6 +66,29 @@ async function main() {
   // Columnas nuevas sobre tablas ya existentes (CREATE TABLE IF NOT
   // EXISTS no las agrega). Idempotente: solo si falta la columna.
   await ensureColumn(conn, 'sale_phases', 'max_tickets', 'INT NULL AFTER price');
+  await ensureColumn(conn, 'tickets', 'customer_document', 'VARCHAR(30) NULL AFTER customer_email');
+  await ensureColumn(conn, 'tickets', 'customer_phone', 'VARCHAR(30) NULL AFTER customer_document');
+  await ensureColumn(conn, 'purchase_requests', 'payment_method_id', 'CHAR(36) NULL AFTER price');
+  await ensureColumn(conn, 'purchase_requests', 'payment_method_label', 'VARCHAR(160) NULL AFTER payment_method_id');
+  await ensureColumn(conn, 'purchase_requests', 'bank_name', 'VARCHAR(120) NULL AFTER payment_method_label');
+  await ensureColumn(conn, 'purchase_requests', 'account_number_snapshot', 'VARCHAR(60) NULL AFTER bank_name');
+  await ensureColumn(conn, 'purchase_requests', 'account_holder_snapshot', 'VARCHAR(120) NULL AFTER account_number_snapshot');
+
+  // Migrar el banco único de payment_settings al primer payment_method
+  // (una sola vez por evento; los campos legacy no se borran).
+  const [migrated] = await conn.query(
+    `INSERT INTO payment_methods
+       (id, event_id, bank_name, account_type, account_number, account_holder,
+        account_document, transfer_note, qr_image_path, qr_image_mime, is_active, sort_order)
+     SELECT UUID(), s.event_id, s.bank_name, s.account_type, s.account_number, s.account_holder,
+            s.account_document, s.transfer_note, s.qr_image_path, s.qr_image_mime, 1, 1
+     FROM payment_settings s
+     WHERE s.bank_name IS NOT NULL AND s.account_number IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM payment_methods m WHERE m.event_id = s.event_id)`
+  );
+  if (migrated.affectedRows) {
+    console.log(`  banco de payment_settings migrado a payment_methods (${migrated.affectedRows}).`);
+  }
 
   // Copia pendiente: hay tablas legacy y la tabla nueva de usuarios está vacía
   // (cubre también una ejecución anterior interrumpida).

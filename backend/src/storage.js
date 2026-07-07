@@ -53,6 +53,18 @@ async function savePaymentQr(eventId, ext, buffer) {
   return file;
 }
 
+// QR de pago POR MÉTODO (varios bancos por evento, cada uno con su QR)
+function paymentMethodQrPath(eventId, methodId, ext) {
+  return path.join(storageDir(), 'payment', `${eventId}-${methodId}.${ext}`);
+}
+
+async function savePaymentMethodQr(eventId, methodId, ext, buffer) {
+  const file = paymentMethodQrPath(eventId, methodId, ext);
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  await fs.promises.writeFile(file, buffer);
+  return file;
+}
+
 // Lectura genérica de un archivo del storage (null si no existe)
 async function readStoredFile(filePath) {
   try {
@@ -70,5 +82,6 @@ async function deleteStoredFile(filePath) {
 
 module.exports = {
   storageDir, ticketPdfPath, saveTicketPdf, readTicketPdf,
-  proofPath, saveProofFile, paymentQrPath, savePaymentQr, readStoredFile, deleteStoredFile,
+  proofPath, saveProofFile, paymentQrPath, savePaymentQr,
+  paymentMethodQrPath, savePaymentMethodQr, readStoredFile, deleteStoredFile,
 };

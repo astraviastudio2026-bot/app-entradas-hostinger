@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   qr_hash             CHAR(64)      NOT NULL,               -- SHA-256(token + "." + QR_SECRET)
   customer_name       VARCHAR(120)  NOT NULL,
   customer_email      VARCHAR(160)  NOT NULL,
+  customer_document   VARCHAR(30)   NULL,                  -- cédula/documento (NULL en ventas antiguas)
+  customer_phone      VARCHAR(30)   NULL,                  -- celular/WhatsApp (NULL en ventas antiguas)
   selected_color      ENUM('verde','rojo','amarillo') NOT NULL,
   price               DECIMAL(10,2) NOT NULL,               -- congelado al precio de la fase al vender
   status              ENUM('sold','used','cancelled') NOT NULL DEFAULT 'sold',
@@ -165,6 +167,11 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
   sale_phase_id          CHAR(36)      NULL,
   phase_name             VARCHAR(80)   NULL,
   price                  DECIMAL(10,2) NOT NULL,                       -- precio congelado al solicitar
+  payment_method_id      CHAR(36)      NULL,                           -- método/banco elegido por el comprador
+  payment_method_label   VARCHAR(160)  NULL,                           -- snapshot: "Banco de Loja · Ahorros"
+  bank_name              VARCHAR(120)  NULL,                           -- snapshot del banco al solicitar
+  account_number_snapshot VARCHAR(60)  NULL,                           -- snapshot de la cuenta destino
+  account_holder_snapshot VARCHAR(120) NULL,                           -- snapshot del titular
   payment_proof_path     VARCHAR(255)  NOT NULL,
   payment_proof_filename VARCHAR(160)  NOT NULL,
   payment_proof_mime     VARCHAR(60)   NOT NULL,
@@ -196,7 +203,33 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------
+-- Métodos de pago por transferencia (varios bancos por evento,
+-- cada uno con su QR). El público en /comprar ve los activos y
+-- elige a cuál transfirió; purchase_requests guarda un snapshot.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS payment_methods (
+  id               CHAR(36)     NOT NULL PRIMARY KEY,
+  event_id         CHAR(36)     NOT NULL,
+  bank_name        VARCHAR(120) NOT NULL,
+  account_type     VARCHAR(60)  NULL,                    -- "Ahorros", "Corriente"…
+  account_number   VARCHAR(60)  NOT NULL,
+  account_holder   VARCHAR(120) NOT NULL,
+  account_document VARCHAR(30)  NULL,                    -- cédula/RUC del titular
+  transfer_note    VARCHAR(300) NULL,
+  qr_image_path    VARCHAR(255) NULL,                    -- QR de pago propio (STORAGE_DIR)
+  qr_image_mime    VARCHAR(60)  NULL,
+  is_active        TINYINT(1)   NOT NULL DEFAULT 1,
+  sort_order       INT          NOT NULL DEFAULT 1,
+  created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_paymethods_event (event_id, is_active, sort_order),
+  CONSTRAINT fk_paymethods_event FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------
 -- Configuración de pagos / datos de transferencia por evento
+-- (los campos bancarios quedaron LEGACY: los bancos viven ahora en
+--  payment_methods; aquí solo se usan el switch general y el mensaje)
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS payment_settings (
   id                   CHAR(36)     NOT NULL PRIMARY KEY,

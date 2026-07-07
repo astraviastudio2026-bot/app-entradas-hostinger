@@ -82,6 +82,8 @@ export default function TicketDetail() {
           <dl className="detail-list">
             <div><dt>Nombre</dt><dd>{ticket.customer_name}</dd></div>
             <div><dt>Correo</dt><dd>{ticket.customer_email}</dd></div>
+            <div><dt>Cédula / documento</dt><dd>{ticket.customer_document || '—'}</dd></div>
+            <div><dt>Celular / WhatsApp</dt><dd>{ticket.customer_phone || '—'}</dd></div>
             <div><dt>Color elegido</dt><dd style={{ color: c.hex, fontWeight: 700 }}>{c.label} · {c.concept}</dd></div>
             {ticket.notes ? <div><dt>Observación</dt><dd>{ticket.notes}</dd></div> : null}
           </dl>

@@ -2,7 +2,7 @@ const express = require('express');
 const { pool } = require('../db');
 const { requireAuth, requireRole } = require('../middleware');
 const { ah, uuid, qrHash, newQrToken, isValidEmail, COLORS } = require('../utils');
-const { getCurrentPhase } = require('../queries');
+const { resolveCurrentPhase } = require('../queries');
 const { generateTicketPdf } = require('../pdf');
 const { sendTicketEmail } = require('../mailer');
 const { ticketPdfPath, saveTicketPdf, readTicketPdf } = require('../storage');
@@ -14,6 +14,7 @@ router.use(requireAuth);
 // Columnas seguras para listados (NUNCA exponer qr_token ni qr_hash).
 const LIST_SELECT = `
   SELECT t.id, t.short_code, t.ticket_number, t.customer_name, t.customer_email,
+         t.customer_document, t.customer_phone,
          t.selected_color, t.price, t.status, t.notes, t.email_sent_at, t.email_last_error,
          t.sold_at, t.used_at, t.cancelled_at, t.cancellation_reason, t.seller_id, t.sale_phase_id,
          p.name AS phase_name, u.full_name AS seller_name, v.full_name AS validated_by_name
@@ -56,6 +57,8 @@ function publicTicket(t) {
     ticket_number: t.ticket_number,
     customer_name: t.customer_name,
     customer_email: t.customer_email,
+    customer_document: t.customer_document || null,
+    customer_phone: t.customer_phone || null,
     selected_color: t.selected_color,
     price: t.price,
     status: t.status,
@@ -75,8 +78,14 @@ function publicTicket(t) {
 // Venta (roles: seller, admin). El precio, la fase y el vendedor
 // los determina SIEMPRE el servidor.
 // ------------------------------------------------------------
+const PHONE_RE = /^[+]?[\d\s()-]{7,20}$/;
+
 router.post('/', requireRole('seller', 'admin'), ah(async (req, res) => {
-  const { customer_name: rawName, customer_email: rawEmail, selected_color: color, notes } = req.body || {};
+  const {
+    customer_name: rawName, customer_email: rawEmail,
+    customer_document: rawDocument, customer_phone: rawPhone,
+    selected_color: color, notes,
+  } = req.body || {};
 
   const customerName = String(rawName || '').trim();
   if (customerName.length < 3 || customerName.length > 120) {
@@ -86,6 +95,15 @@ router.post('/', requireRole('seller', 'admin'), ah(async (req, res) => {
     return res.status(422).json({ error: 'El correo del cliente no es válido' });
   }
   const customerEmail = String(rawEmail).trim().toLowerCase();
+  // Cédula y celular: requeridos para el control interno del evento.
+  const customerDocument = String(rawDocument || '').trim().slice(0, 30);
+  if (customerDocument.length < 5) {
+    return res.status(422).json({ error: 'Escribe la cédula o documento del cliente (mínimo 5 caracteres)' });
+  }
+  const customerPhone = String(rawPhone || '').trim();
+  if (!PHONE_RE.test(customerPhone)) {
+    return res.status(422).json({ error: 'Escribe un celular/WhatsApp válido (7 a 20 dígitos; se permiten +, espacios y guiones)' });
+  }
   if (!COLORS.includes(color)) {
     return res.status(422).json({ error: 'Color inválido: debe ser verde, rojo o amarillo' });
   }
@@ -107,26 +125,18 @@ router.post('/', requireRole('seller', 'admin'), ah(async (req, res) => {
       return res.status(409).json({ error: 'No hay evento activo configurado.' });
     }
 
-    const phase = await getCurrentPhase(event.id, conn);
+    // Fase vigente con AUTO-AVANCE: si la fase por fecha agotó su cupo,
+    // se vende con la siguiente fase disponible (y su precio). Se
+    // resuelve DENTRO de la transacción con el evento bloqueado: sin
+    // sobreventa del cupo por fase bajo concurrencia.
+    const { phase, allSoldOut } = await resolveCurrentPhase(event.id, conn);
     if (!phase) {
       await conn.rollback();
-      return res.status(409).json({ error: 'No hay una fase de venta activa para la fecha actual.' });
-    }
-
-    // Cupo de la fase vigente (si tiene cupo propio definido). El lock
-    // del evento ya serializa ventas y aprobaciones: sin sobreventa.
-    if (phase.max_tickets != null) {
-      const [[{ phaseSold }]] = await conn.query(
-        "SELECT COUNT(*) AS phaseSold FROM tickets WHERE sale_phase_id = ? AND status IN ('sold','used')",
-        [phase.id]
-      );
-      if (phaseSold >= phase.max_tickets) {
-        await conn.rollback();
-        return res.status(409).json({
-          error: `El cupo de la fase "${phase.name}" ya se agotó (${phaseSold}/${phase.max_tickets}). `
-            + 'No se pueden registrar más ventas en esta fase.',
-        });
-      }
+      return res.status(409).json({
+        error: allSoldOut
+          ? 'Los cupos de todas las fases de venta ya se agotaron. Amplía los cupos en Evento si necesitas vender más.'
+          : 'No hay una fase de venta activa para la fecha actual.',
+      });
     }
 
     // Límite global del evento
@@ -172,11 +182,13 @@ router.post('/', requireRole('seller', 'admin'), ah(async (req, res) => {
     ticketId = uuid();
     await conn.query(
       `INSERT INTO tickets (id, event_id, seller_id, sale_phase_id, ticket_number, short_code,
-                            qr_token, qr_hash, customer_name, customer_email, selected_color,
+                            qr_token, qr_hash, customer_name, customer_email,
+                            customer_document, customer_phone, selected_color,
                             price, status, notes, sold_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, UTC_TIMESTAMP())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, UTC_TIMESTAMP())`,
       [ticketId, event.id, req.user.id, phase.id, Number(maxNum) + 1, shortCode,
-        qrToken, qrHash(qrToken), customerName, customerEmail, color, phase.price, notesClean]
+        qrToken, qrHash(qrToken), customerName, customerEmail,
+        customerDocument, customerPhone, color, phase.price, notesClean]
     );
     await conn.commit();
   } catch (err) {

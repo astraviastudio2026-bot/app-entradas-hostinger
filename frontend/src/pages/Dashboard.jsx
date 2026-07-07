@@ -108,23 +108,28 @@ export default function Dashboard() {
           {!m.by_phase.length ? <p className="cell-sub">Sin fases configuradas</p> : (
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Fase</th><th>Precio</th><th>Vendidas / Cupo</th><th>Ingresos</th></tr></thead>
+                <thead><tr><th>Fase</th><th>Precio</th><th>Vendidas / Cupo</th><th>Estado</th><th>Ingresos</th></tr></thead>
                 <tbody>
                   {m.by_phase.map((p) => {
                     const sold = Number(p.sold) || 0;
                     const hasQuota = p.max_tickets != null;
                     const quota = hasQuota ? Number(p.max_tickets) : null;
                     const soldOut = hasQuota && sold >= quota;
+                    const ended = new Date(p.ends_at).getTime() < Date.now();
                     return (
-                      <tr key={p.id}>
-                        <td data-label="Fase">
-                          {p.name}
-                          {soldOut ? <span className="status-badge status-rejected" style={{ marginLeft: 8 }}>Agotada</span> : null}
-                        </td>
+                      <tr key={p.id} className={p.is_active ? '' : 'row-muted'}>
+                        <td data-label="Fase">{p.name}</td>
                         <td data-label="Precio">{fmtMoney(p.price)}</td>
                         <td data-label="Vendidas / Cupo">
                           {sold} / {hasQuota ? quota : '—'}
                           {hasQuota ? <span className="cell-sub"> · {Math.max(0, quota - sold)} rest.</span> : null}
+                        </td>
+                        <td data-label="Estado">
+                          {!p.is_active ? <span className="status-badge">Inactiva</span>
+                            : soldOut ? <span className="status-badge status-rejected">Agotada</span>
+                              : p.id === data.phase?.id ? <span className="status-badge status-approved">Activa</span>
+                                : ended ? <span className="status-badge">Finalizada</span>
+                                  : <span className="status-badge status-pending">Próxima</span>}
                         </td>
                         <td data-label="Ingresos">{fmtMoney(p.revenue)}</td>
                       </tr>

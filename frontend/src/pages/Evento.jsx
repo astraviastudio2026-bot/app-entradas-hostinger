@@ -253,6 +253,28 @@ export default function Evento() {
 
       <EventForm event={event} onSaved={load} />
 
+      {/* Advertencias internas de configuración de cupos */}
+      {event && phases.length ? (() => {
+        const activePhases = phases.filter((p) => p.is_active);
+        const noQuota = activePhases.filter((p) => p.max_tickets == null);
+        const assigned = phases.reduce((acc, p) => acc + (p.max_tickets != null ? Number(p.max_tickets) : 0), 0);
+        const warnings = [];
+        if (noQuota.length) {
+          warnings.push(`Las fases activas sin cupo propio (${noQuota.map((p) => p.name).join(', ')}) `
+            + 'venden contra el total del evento y el auto-avance no puede detectar cuándo "se agotan". '
+            + 'Se recomienda definir cupo en todas las fases.');
+        }
+        if (assigned > 0 && assigned < event.total_tickets && !noQuota.length) {
+          warnings.push(`Hay ${event.total_tickets - assigned} entradas del total (${event.total_tickets}) sin asignar a ninguna fase: `
+            + 'no podrán venderse hasta ampliar algún cupo.');
+        }
+        return warnings.length ? (
+          <div className="panel form-warning" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {warnings.map((w) => <span key={w}>⚠ {w}</span>)}
+          </div>
+        ) : null;
+      })() : null}
+
       {!event ? null : !phases.length ? (
         <EmptyState text="Aún no hay fases de venta. Crea la primera." />
       ) : (
@@ -320,6 +342,7 @@ export default function Evento() {
                     const hasQuota = p.max_tickets != null;
                     const quota = hasQuota ? Number(p.max_tickets) : null;
                     const soldOut = hasQuota && sold >= quota;
+                    const ended = new Date(p.ends_at).getTime() < Date.now();
                     return (
                       <tr key={p.id} className={p.is_active ? '' : 'row-muted'}>
                         <td data-label="Fase"><span className="cell-main">{p.phase_order}. {p.name}</span></td>
@@ -329,10 +352,11 @@ export default function Evento() {
                         <td data-label="Vendidas">{sold}</td>
                         <td data-label="Restantes">{hasQuota ? Math.max(0, quota - sold) : '—'}</td>
                         <td data-label="Estado">
-                          {soldOut ? <span className="status-badge status-rejected">Agotada</span>
-                            : p.id === currentId ? <span className="status-badge status-approved">Vigente</span>
-                              : p.is_active ? <span className="status-badge status-pending">Programada</span>
-                                : <span className="status-badge">Inactiva</span>}
+                          {!p.is_active ? <span className="status-badge">Inactiva</span>
+                            : soldOut ? <span className="status-badge status-rejected">Agotada</span>
+                              : p.id === currentId ? <span className="status-badge status-approved">Vigente</span>
+                                : ended ? <span className="status-badge">Finalizada</span>
+                                  : <span className="status-badge status-pending">Próxima</span>}
                         </td>
                       </tr>
                     );

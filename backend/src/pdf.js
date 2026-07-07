@@ -272,15 +272,22 @@ async function generateTicketPdf(ticket) {
   doc.roundedRect(tx, bandY, tw, bandH, 10).fill('#131316');
   doc.lineWidth(0.8).strokeColor('#ffffff', 0.12).roundedRect(tx, bandY, tw, bandH, 10).stroke();
 
+  // Datos de identidad del cliente (si existen): línea pequeña extra
+  // bajo el correo. Prioridad visual intacta: nombre, código, color, QR.
+  const idBits = [
+    ticket.customer_document ? `CI ${ticket.customer_document}` : null,
+    ticket.customer_phone || null,
+  ].filter(Boolean).join(' · ');
+
   const fields = [
-    ['CLIENTE', ticket.customer_name, ticket.customer_email || ''],
+    ['CLIENTE', ticket.customer_name, ticket.customer_email || '', idBits],
     ['COLOR', `${color.label} · ${color.concept}`, ''],
     ['FASE', ticket.phase_name || '-', `${CURRENCY} ${Number(ticket.price).toFixed(2)}`],
     ['EVENTO', formatDateOnly(ticket.event_date), ticket.event_location || ''],
     ['VENDEDOR', ticket.seller_name || '-', `Venta: ${formatEc(ticket.sold_at)}`],
   ];
   const colW = (tw - 220) / fields.length;
-  fields.forEach(([label, value, extra], i) => {
+  fields.forEach(([label, value, extra, extra2], i) => {
     const fx = tx + 18 + i * colW;
     const maxW = colW - 14;
     doc.font('Helvetica-Bold').fontSize(6.5).fillColor(color.soft, 0.85);
@@ -290,6 +297,10 @@ async function generateTicketPdf(ticket) {
     if (extra) {
       doc.font('Helvetica').fontSize(7).fillColor('#ffffff', 0.55);
       doc.text(fitText(doc, extra, maxW), fx, bandY + 39, { lineBreak: false });
+    }
+    if (extra2) {
+      doc.font('Helvetica').fontSize(6.5).fillColor('#ffffff', 0.45);
+      doc.text(fitText(doc, extra2, maxW), fx, bandY + 50, { lineBreak: false });
     }
   });
 

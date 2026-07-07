@@ -143,7 +143,10 @@ export default function Tickets() {
                   </td>
                   <td data-label="Cliente">
                     <div className="cell-main">{t.customer_name}</div>
-                    <div className="cell-sub">{t.customer_email}</div>
+                    <div className="cell-sub">
+                      {t.customer_email}
+                      {t.customer_phone ? ` · ${t.customer_phone}` : ''}
+                    </div>
                   </td>
                   <td data-label="Color"><ColorBadge color={t.selected_color} /></td>
                   <td data-label="Precio">{fmtMoney(t.price)}</td>

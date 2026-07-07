@@ -25,6 +25,8 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LIST_SELECT = `
   SELECT r.id, r.request_code, r.buyer_name, r.buyer_email, r.buyer_phone, r.buyer_document,
          r.selected_color, r.sale_phase_id, r.phase_name, r.price, r.status, r.notes,
+         r.payment_method_id, r.payment_method_label, r.bank_name,
+         r.account_number_snapshot, r.account_holder_snapshot,
          r.rejection_reason, r.approved_at, r.rejected_at, r.ticket_id,
          r.payment_proof_filename, r.payment_proof_mime,
          r.status_email_sent_at, r.created_at,
@@ -35,6 +37,13 @@ const LIST_SELECT = `
   LEFT JOIN users ur ON ur.id = r.rejected_by
   LEFT JOIN tickets t ON t.id = r.ticket_id
 `;
+
+// Cuenta parcialmente oculta para resúmenes: solo los últimos 4 dígitos.
+function maskAccount(number) {
+  const s = String(number || '').replace(/\s+/g, '');
+  if (!s) return null;
+  return s.length <= 4 ? s : `•••• ${s.slice(-4)}`;
+}
 
 async function loadRequest(id, db = pool) {
   const [rows] = await db.query(`${LIST_SELECT} WHERE r.id = ?`, [String(id)]);
@@ -64,6 +73,14 @@ router.get('/', ah(async (req, res) => {
   if (req.query.phase_id) {
     where.push('r.sale_phase_id = ?');
     params.push(String(req.query.phase_id));
+  }
+  if (req.query.payment_method_id) {
+    if (req.query.payment_method_id === 'none') {
+      where.push('r.payment_method_id IS NULL');
+    } else {
+      where.push('r.payment_method_id = ?');
+      params.push(String(req.query.payment_method_id));
+    }
   }
   if (req.query.date_from && DATE_RE.test(String(req.query.date_from))) {
     where.push('r.created_at >= ?');
@@ -107,6 +124,98 @@ router.get('/', ah(async (req, res) => {
       approved_revenue: Number(counts.approved_revenue) || 0,
       tickets_available: Math.max(0, event.total_tickets - (Number(sold) || 0)),
     },
+  });
+}));
+
+// ------------------------------------------------------------
+// GET /api/purchases/accounting — contabilidad por cuenta bancaria
+// (SOLO panel interno). Cuánto ingresó a cada método por compras web:
+//   - aprobado = status 'approved' CON ticket generado (ticket_id);
+//   - pendiente/rechazado se muestran aparte y NUNCA suman al aprobado;
+//   - solicitudes antiguas sin método -> fila "Método no registrado";
+//   - si un método se editó/eliminó, se usan los snapshots guardados.
+// ------------------------------------------------------------
+router.get('/accounting', ah(async (req, res) => {
+  const [events] = await pool.query(
+    'SELECT id, name FROM events WHERE is_active = 1 ORDER BY created_at DESC, id DESC LIMIT 1'
+  );
+  const event = events[0] || null;
+  if (!event) return res.json({ rows: [], methods: [] });
+
+  const [methods] = await pool.query(
+    `SELECT id, bank_name, account_type, account_number, account_holder, is_active, sort_order
+     FROM payment_methods WHERE event_id = ?
+     ORDER BY sort_order ASC, created_at ASC`,
+    [event.id]
+  );
+  const [agg] = await pool.query(
+    `SELECT r.payment_method_id,
+            MAX(r.payment_method_label)     AS label_snapshot,
+            MAX(r.bank_name)                AS bank_snapshot,
+            MAX(r.account_number_snapshot)  AS account_snapshot,
+            MAX(r.account_holder_snapshot)  AS holder_snapshot,
+            SUM(r.status = 'approved' AND r.ticket_id IS NOT NULL)                          AS approved_count,
+            COALESCE(SUM(IF(r.status = 'approved' AND r.ticket_id IS NOT NULL, r.price, 0)), 0) AS approved_total,
+            SUM(r.status = 'pending')                                                      AS pending_count,
+            COALESCE(SUM(IF(r.status = 'pending', r.price, 0)), 0)                         AS pending_total,
+            SUM(r.status = 'rejected')                                                     AS rejected_count,
+            COALESCE(SUM(IF(r.status = 'rejected', r.price, 0)), 0)                        AS rejected_total,
+            MAX(IF(r.status = 'approved' AND r.ticket_id IS NOT NULL, r.approved_at, NULL)) AS last_approved_at
+     FROM purchase_requests r
+     WHERE r.event_id = ?
+     GROUP BY r.payment_method_id`,
+    [event.id]
+  );
+
+  const zero = {
+    approved_count: 0, approved_total: 0, pending_count: 0, pending_total: 0,
+    rejected_count: 0, rejected_total: 0, last_approved_at: null,
+  };
+  const toNums = (a) => ({
+    approved_count: Number(a.approved_count) || 0,
+    approved_total: Number(a.approved_total) || 0,
+    pending_count: Number(a.pending_count) || 0,
+    pending_total: Number(a.pending_total) || 0,
+    rejected_count: Number(a.rejected_count) || 0,
+    rejected_total: Number(a.rejected_total) || 0,
+    last_approved_at: a.last_approved_at || null,
+  });
+
+  const byId = new Map(agg.map((a) => [a.payment_method_id || 'none', a]));
+  const rows = [];
+  // Métodos configurados (con o sin movimientos), en su orden
+  for (const m of methods) {
+    const a = byId.get(m.id);
+    byId.delete(m.id);
+    rows.push({
+      payment_method_id: m.id,
+      bank_name: m.bank_name,
+      account_type: m.account_type,
+      account_number_masked: maskAccount(m.account_number),
+      account_holder: m.account_holder,
+      is_active: Boolean(m.is_active),
+      ...(a ? toNums(a) : zero),
+    });
+  }
+  // Movimientos de métodos eliminados o solicitudes antiguas sin método
+  for (const [key, a] of byId) {
+    rows.push({
+      payment_method_id: key === 'none' ? null : key,
+      bank_name: a.bank_snapshot || a.label_snapshot || 'Método no registrado',
+      account_type: null,
+      account_number_masked: maskAccount(a.account_snapshot),
+      account_holder: a.holder_snapshot || null,
+      is_active: null, // cuenta anterior / no configurada
+      ...toNums(a),
+    });
+  }
+
+  res.json({
+    event: { id: event.id, name: event.name },
+    rows,
+    methods: methods.map((m) => ({
+      id: m.id, bank_name: m.bank_name, account_type: m.account_type, is_active: Boolean(m.is_active),
+    })),
   });
 }));
 
@@ -184,10 +293,16 @@ router.post('/:id/approve', ah(async (req, res) => {
     }
 
     // 2b) Cupo de la fase congelada en la solicitud: solo la aprobación
-    //     consume cupo, así que se valida aquí (con lock) y no al solicitar.
+    //     consume cupo, así que se valida aquí (con lock) y no al
+    //     solicitar. Si esa fase se agotó entre la solicitud y la
+    //     aprobación, se ofrece aprobar consumiendo cupo de la
+    //     SIGUIENTE fase disponible (conservando el precio ya pagado):
+    //     el admin decide reenviando con { use_next_phase: true }.
+    let ticketPhaseId = request.sale_phase_id;
+    let phaseNote = null;
     if (request.sale_phase_id) {
       const [phaseRows] = await conn.query(
-        'SELECT id, name, max_tickets FROM sale_phases WHERE id = ? FOR UPDATE',
+        'SELECT id, name, phase_order, max_tickets FROM sale_phases WHERE id = ? FOR UPDATE',
         [request.sale_phase_id]
       );
       const phase = phaseRows[0];
@@ -197,11 +312,37 @@ router.post('/:id/approve', ah(async (req, res) => {
           [phase.id]
         );
         if (phaseSold >= phase.max_tickets) {
-          await conn.rollback();
-          return res.status(409).json({
-            error: `No se puede aprobar esta solicitud porque el cupo de la fase "${phase.name}" ya se agotó `
-              + `(${phaseSold}/${phase.max_tickets}). Amplía el cupo de la fase o rechaza la solicitud.`,
-          });
+          // Siguiente fase activa (por orden) que aún tenga cupo y no
+          // haya finalizado por fecha.
+          const [nextRows] = await conn.query(
+            `SELECT p.id, p.name FROM sale_phases p
+             WHERE p.event_id = ? AND p.is_active = 1 AND p.phase_order > ?
+               AND p.ends_at >= UTC_TIMESTAMP()
+               AND (p.max_tickets IS NULL OR p.max_tickets >
+                 (SELECT COUNT(*) FROM tickets t
+                  WHERE t.sale_phase_id = p.id AND t.status IN ('sold','used')))
+             ORDER BY p.phase_order ASC LIMIT 1`,
+            [event.id, phase.phase_order]
+          );
+          const nextPhase = nextRows[0] || null;
+          const useNext = Boolean(req.body && req.body.use_next_phase);
+          if (!useNext || !nextPhase) {
+            await conn.rollback();
+            return res.status(409).json({
+              error: `El cupo de la fase "${phase.name}" ya se agotó (${phaseSold}/${phase.max_tickets}).`
+                + (nextPhase
+                  ? ` Puedes aprobarla consumiendo cupo de la siguiente fase ("${nextPhase.name}"), conservando el precio pagado.`
+                  : ' No hay otra fase con cupo disponible: amplía el cupo o rechaza la solicitud.'),
+              phase_sold_out: true,
+              can_use_next_phase: Boolean(nextPhase),
+              next_phase_name: nextPhase ? nextPhase.name : null,
+            });
+          }
+          // El admin aceptó: la entrada consume cupo de la fase siguiente
+          // pero conserva el precio congelado de la solicitud (es lo que
+          // el comprador ya pagó).
+          ticketPhaseId = nextPhase.id;
+          phaseNote = `Aprobada en fase "${nextPhase.name}" (cupo de "${phase.name}" agotado)`;
         }
       }
     }
@@ -218,14 +359,17 @@ router.post('/:id/approve', ah(async (req, res) => {
 
     const qrToken = newQrToken();
     ticketId = uuid();
-    const ticketNotes = `Compra web ${request.request_code} · Tel: ${request.buyer_phone}`.slice(0, 500);
+    const ticketNotes = [`Compra web ${request.request_code}`, request.bank_name ? `Pago: ${request.bank_name}` : null, phaseNote]
+      .filter(Boolean).join(' · ').slice(0, 500);
     await conn.query(
       `INSERT INTO tickets (id, event_id, seller_id, sale_phase_id, ticket_number, short_code,
-                            qr_token, qr_hash, customer_name, customer_email, selected_color,
+                            qr_token, qr_hash, customer_name, customer_email,
+                            customer_document, customer_phone, selected_color,
                             price, status, notes, sold_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, UTC_TIMESTAMP())`,
-      [ticketId, event.id, req.user.id, request.sale_phase_id, Number(maxNum) + 1, shortCode,
-        qrToken, qrHash(qrToken), request.buyer_name, request.buyer_email, request.selected_color,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, UTC_TIMESTAMP())`,
+      [ticketId, event.id, req.user.id, ticketPhaseId, Number(maxNum) + 1, shortCode,
+        qrToken, qrHash(qrToken), request.buyer_name, request.buyer_email,
+        request.buyer_document, request.buyer_phone, request.selected_color,
         request.price, ticketNotes]
     );
 

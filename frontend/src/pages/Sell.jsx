@@ -8,6 +8,7 @@ import {
 import TicketPreview from '../components/TicketPreview.jsx';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const PHONE_RE = /^[+]?[\d\s()-]{7,20}$/;
 
 // Página de venta (inicio del vendedor): formulario a la izquierda y
 // vista previa de la entrada en tiempo real a la derecha (una columna
@@ -20,6 +21,8 @@ export default function Sell() {
   const [recent, setRecent] = useState([]);
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
+  const [customerDocument, setCustomerDocument] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
   const [color, setColor] = useState('');
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
@@ -58,6 +61,14 @@ export default function Sell() {
       setError('El correo del cliente no es válido. Revisa que tenga el formato nombre@dominio.com.');
       return;
     }
+    if (customerDocument.trim().length < 5) {
+      setError('Escribe la cédula o documento del cliente (mínimo 5 caracteres).');
+      return;
+    }
+    if (!PHONE_RE.test(customerPhone.trim())) {
+      setError('Escribe un celular/WhatsApp válido (7 a 20 dígitos).');
+      return;
+    }
     if (!color) {
       setError('Selecciona el color elegido por el cliente.');
       return;
@@ -69,6 +80,8 @@ export default function Sell() {
         body: {
           customer_name: name,
           customer_email: customerEmail.trim(),
+          customer_document: customerDocument.trim(),
+          customer_phone: customerPhone.trim(),
           selected_color: color,
           notes: notes.trim() || undefined,
         },
@@ -78,6 +91,8 @@ export default function Sell() {
       else toast(data.message, 'warning');
       setCustomerName('');
       setCustomerEmail('');
+      setCustomerDocument('');
+      setCustomerPhone('');
       setColor('');
       setNotes('');
       loadContext();
@@ -125,6 +140,12 @@ export default function Sell() {
           <div className="sold-meta">
             <span>{t.customer_name}</span>
             <span>{t.customer_email}</span>
+            {t.customer_document || t.customer_phone ? (
+              <span>
+                {[t.customer_document ? `CI ${t.customer_document}` : null,
+                  t.customer_phone ? `Cel. ${t.customer_phone}` : null].filter(Boolean).join(' · ')}
+              </span>
+            ) : null}
             <span style={{ color: c.hex, fontWeight: 700 }}>{c.label} · {c.concept}</span>
             <span>{fmtMoney(t.price)} · {t.phase_name}</span>
           </div>
@@ -204,6 +225,32 @@ export default function Sell() {
                 onChange={(e) => setCustomerEmail(e.target.value)}
                 placeholder="cliente@correo.com"
                 maxLength={160}
+                autoComplete="off"
+                required
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <label className="field">
+              <span>Cédula / documento *</span>
+              <input
+                value={customerDocument}
+                onChange={(e) => setCustomerDocument(e.target.value)}
+                placeholder="1104XXXXXX"
+                minLength={5}
+                maxLength={30}
+                autoComplete="off"
+                required
+              />
+            </label>
+            <label className="field">
+              <span>Celular / WhatsApp *</span>
+              <input
+                type="tel"
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                placeholder="09XXXXXXXX"
+                maxLength={20}
                 autoComplete="off"
                 required
               />

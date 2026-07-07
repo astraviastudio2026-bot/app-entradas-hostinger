@@ -18,6 +18,13 @@ function WebStatusBadge({ status }) {
   return <span className={`status-badge ${s.className}`}>{s.label}</span>;
 }
 
+// Banco/método usado por el comprador (solicitudes antiguas: sin método)
+function BankBadge({ request }) {
+  const label = request.bank_name || request.payment_method_label;
+  if (!label) return <span className="bank-badge bank-none">Método no registrado</span>;
+  return <span className="bank-badge">{label}</span>;
+}
+
 // Comprobante embebido: imagen directa o enlace si es PDF. La URL es
 // del endpoint autenticado (la cookie de sesión viaja sola al mismo origen).
 function ProofView({ request }) {
@@ -52,12 +59,18 @@ export default function ComprasWeb() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('pending');
   const [color, setColor] = useState('');
+  const [methodFilter, setMethodFilter] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+
+  // contabilidad por cuenta bancaria (interno)
+  const [accounting, setAccounting] = useState(null);
+  const [showAccounting, setShowAccounting] = useState(false);
 
   // modales
   const [detail, setDetail] = useState(null);   // solicitud abierta
   const [approving, setApproving] = useState(null); // solicitud a confirmar
+  const [nextPhasePrompt, setNextPhasePrompt] = useState(null); // fase agotada: ofrecer siguiente
   const [rejecting, setRejecting] = useState(null); // solicitud a rechazar
   const [rejectReason, setRejectReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -67,14 +80,16 @@ export default function ComprasWeb() {
     if (q.trim()) params.set('q', q.trim());
     if (status) params.set('status', status);
     if (color) params.set('color', color);
+    if (methodFilter) params.set('payment_method_id', methodFilter);
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
     api(`/purchases?${params.toString()}`)
       .then(setData)
       .catch((e) => setError(e.message));
+    api('/purchases/accounting').then(setAccounting).catch(() => {});
   };
 
-  useEffect(load, [status, color, dateFrom, dateTo]);
+  useEffect(load, [status, color, methodFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     if (!highlightId) return;
@@ -88,18 +103,29 @@ export default function ComprasWeb() {
     if (highlightId) setSearchParams({}, { replace: true });
   };
 
-  const approve = async (request) => {
+  const approve = async (request, useNextPhase = false) => {
     if (busy) return; // bloqueo anti doble clic
     setBusy(true);
     try {
-      const d = await api(`/purchases/${request.id}/approve`, { method: 'POST' });
+      const d = await api(`/purchases/${request.id}/approve`, {
+        method: 'POST',
+        body: useNextPhase ? { use_next_phase: true } : undefined,
+      });
       toast(d.message, d.emailSent ? 'success' : 'warning');
       setApproving(null);
+      setNextPhasePrompt(null);
       closeDetail();
       load();
     } catch (err) {
-      toast(err.message, 'error');
       setApproving(null);
+      // Cupo de la fase agotado: si hay una fase siguiente con cupo,
+      // ofrecer aprobar consumiendo su cupo (conserva el precio pagado).
+      if (err.data?.phase_sold_out && err.data?.can_use_next_phase) {
+        setNextPhasePrompt({ request, message: err.message, nextPhaseName: err.data.next_phase_name });
+      } else {
+        toast(err.message, 'error');
+        setNextPhasePrompt(null);
+      }
       load();
     } finally {
       setBusy(false);
@@ -160,6 +186,48 @@ export default function ComprasWeb() {
         </div>
       ) : null}
 
+      {/* ---------- contabilidad por cuenta bancaria (interno) ---------- */}
+      {accounting?.rows?.length ? (
+        <div className="panel accounting-panel">
+          <div className="panel-head">
+            <h3>Contabilidad por cuenta bancaria</h3>
+            <button type="button" className="link link-btn" onClick={() => setShowAccounting((v) => !v)}>
+              {showAccounting ? 'Ocultar ▲' : 'Ver detalle ▼'}
+            </button>
+          </div>
+          <div className="accounting-grid">
+            {accounting.rows.map((r) => (
+              <div key={r.payment_method_id || 'none'} className={`accounting-card${r.is_active === false ? ' method-off' : ''}`}>
+                <div className="accounting-head">
+                  <strong>{r.bank_name}</strong>
+                  {r.is_active === true ? <span className="status-badge status-approved">Activa</span>
+                    : r.is_active === false ? <span className="status-badge">Inactiva</span>
+                      : <span className="status-badge status-pending">Cuenta anterior</span>}
+                </div>
+                {r.account_number_masked || r.account_holder ? (
+                  <div className="cell-sub">
+                    {[r.account_type, r.account_number_masked, r.account_holder].filter(Boolean).join(' · ')}
+                  </div>
+                ) : null}
+                <div className="accounting-total">{fmtMoney(r.approved_total)}</div>
+                <div className="cell-sub">{r.approved_count} aprobada(s) con entrada</div>
+                {showAccounting ? (
+                  <div className="accounting-detail">
+                    <span>Pendiente: <strong>{fmtMoney(r.pending_total)}</strong> ({r.pending_count})</span>
+                    <span>Rechazado: <strong>{fmtMoney(r.rejected_total)}</strong> ({r.rejected_count})</span>
+                    <span>Última aprobada: <strong>{r.last_approved_at ? fmtDate(r.last_approved_at) : '—'}</strong></span>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <p className="cell-sub" style={{ marginTop: 8 }}>
+            El recaudado por cuenta solo suma compras web <strong>aprobadas con entrada generada</strong>;
+            pendientes y rechazadas nunca cuentan. Resumen interno: no es visible al público.
+          </p>
+        </div>
+      ) : null}
+
       <div className="filters">
         <form className="search-box" onSubmit={(e) => { e.preventDefault(); load(); }}>
           <input
@@ -181,6 +249,15 @@ export default function ComprasWeb() {
             <option key={c.key} value={c.key}>{c.label}</option>
           ))}
         </select>
+        <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value)}>
+          <option value="">Banco: todos</option>
+          {(accounting?.methods || []).map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.bank_name}{m.account_type ? ` · ${m.account_type}` : ''}{m.is_active ? '' : ' (inactivo)'}
+            </option>
+          ))}
+          <option value="none">Método no registrado</option>
+        </select>
         <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} title="Desde" />
         <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} title="Hasta" />
       </div>
@@ -196,6 +273,7 @@ export default function ComprasWeb() {
                 <th>Comprador</th>
                 <th>Entrada</th>
                 <th>Fase</th>
+                <th>Pago</th>
                 <th>Precio</th>
                 <th>Fecha</th>
                 <th>Estado</th>
@@ -216,6 +294,7 @@ export default function ComprasWeb() {
                   </td>
                   <td data-label="Entrada"><ColorBadge color={r.selected_color} /></td>
                   <td data-label="Fase">{r.phase_name || '—'}</td>
+                  <td data-label="Pago"><BankBadge request={r} /></td>
                   <td data-label="Precio">{fmtMoney(r.price)}</td>
                   <td data-label="Fecha">{fmtDate(r.created_at)}</td>
                   <td data-label="Estado">
@@ -272,6 +351,16 @@ export default function ComprasWeb() {
               <div><dt>WhatsApp</dt><dd>{detail.buyer_phone}</dd></div>
               {detail.buyer_document ? <div><dt>Cédula / doc.</dt><dd>{detail.buyer_document}</dd></div> : null}
               <div><dt>Fase</dt><dd>{detail.phase_name || '—'}</dd></div>
+              <div><dt>Banco / método usado</dt><dd><BankBadge request={detail} /></dd></div>
+              {detail.account_number_snapshot ? (
+                <div>
+                  <dt>Cuenta destino</dt>
+                  <dd>
+                    {detail.account_number_snapshot}
+                    {detail.account_holder_snapshot ? ` · ${detail.account_holder_snapshot}` : ''}
+                  </dd>
+                </div>
+              ) : null}
               <div><dt>Precio esperado</dt><dd>{fmtMoney(detail.price)}</dd></div>
               <div><dt>Fecha de solicitud</dt><dd>{fmtDate(detail.created_at)}</dd></div>
               {detail.notes ? <div><dt>Observación</dt><dd>{detail.notes}</dd></div> : null}
@@ -351,6 +440,33 @@ export default function ComprasWeb() {
                     Generando entrada…
                   </>
                 ) : 'Sí, aprobar y enviar entrada'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {/* ---------- fase agotada: aprobar con la siguiente fase ---------- */}
+      {nextPhasePrompt ? (
+        <Modal title="Cupo de fase agotado" onClose={() => !busy && setNextPhasePrompt(null)}>
+          <div className="modal-form">
+            <p className="confirm-text">{nextPhasePrompt.message}</p>
+            <p className="confirm-text cell-sub">
+              La entrada de <strong>{nextPhasePrompt.request.buyer_name}</strong> se registraría en la fase{' '}
+              <strong>{nextPhasePrompt.nextPhaseName}</strong> conservando el precio ya pagado
+              ({fmtMoney(nextPhasePrompt.request.price)}).
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setNextPhasePrompt(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-approve"
+                disabled={busy}
+                onClick={() => approve(nextPhasePrompt.request, true)}
+              >
+                {busy ? 'Aprobando…' : `Sí, aprobar usando "${nextPhasePrompt.nextPhaseName}"`}
               </button>
             </div>
           </div>

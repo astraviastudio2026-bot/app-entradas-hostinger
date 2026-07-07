@@ -14,7 +14,7 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const { pool } = require('../db');
 const { ah, uuid, isValidEmail, COLORS } = require('../utils');
-const { getActiveEvent, getCurrentPhase, isPhaseSoldOut } = require('../queries');
+const { getActiveEvent, resolveCurrentPhase, getActivePaymentMethods } = require('../queries');
 const { saveProofFile, readStoredFile, deleteStoredFile } = require('../storage');
 const { sendRequestReceivedEmail, sendCodeRecoveryEmail } = require('../webMailer');
 const { audit } = require('../audit');
@@ -110,14 +110,15 @@ router.get('/event', ah(async (req, res) => {
   const event = await getActiveEvent();
   if (!event) return res.json({ event: null, sales_enabled: false });
 
-  const [phase, settings, sold] = await Promise.all([
-    getCurrentPhase(event.id),
+  const [{ phase, allSoldOut }, settings, sold, methods] = await Promise.all([
+    resolveCurrentPhase(event.id),
     getPaymentSettings(event.id),
     soldCount(event.id),
+    getActivePaymentMethods(event.id),
   ]);
   const available = Math.max(0, event.total_tickets - sold);
-  const phaseSoldOut = available > 0 ? await isPhaseSoldOut(phase) : false;
-  const salesEnabled = Boolean(settings && settings.public_sales_enabled);
+  // La venta pública exige el switch general Y al menos un método activo.
+  const salesEnabled = Boolean(settings && settings.public_sales_enabled) && methods.length > 0;
 
   // IMPORTANTE: esta respuesta es PÚBLICA. Nunca exponer cantidades
   // exactas de entradas/cupos (solo booleanos de agotado); el detalle
@@ -129,34 +130,57 @@ router.get('/event', ah(async (req, res) => {
       location: event.location,
     },
     phase: phase ? { name: phase.name, price: phase.price, ends_at: phase.ends_at } : null,
-    sold_out: available <= 0 || phaseSoldOut,
+    sold_out: available <= 0 || allSoldOut,
     sales_enabled: salesEnabled,
-    payment: settings ? {
-      bank_name: settings.bank_name,
-      account_type: settings.account_type,
-      account_number: settings.account_number,
-      account_holder: settings.account_holder,
-      account_document: settings.account_document,
-      transfer_note: settings.transfer_note,
-      buyer_message: settings.buyer_message,
-      has_qr_image: Boolean(settings.qr_image_path),
-    } : null,
+    payment: {
+      buyer_message: settings ? settings.buyer_message : null,
+      methods: methods.map((m) => ({
+        id: m.id,
+        bank_name: m.bank_name,
+        account_type: m.account_type,
+        account_number: m.account_number,
+        account_holder: m.account_holder,
+        account_document: m.account_document,
+        transfer_note: m.transfer_note,
+        has_qr_image: Boolean(m.qr_image_path),
+      })),
+    },
     colors: COLORS,
   });
 }));
 
 // ------------------------------------------------------------
-// GET /api/public/payment-qr — imagen QR de pago (pública: es la
-// que el comprador escanea para transferir)
+// GET /api/public/payment-qr/:methodId — imagen QR de pago de un
+// método concreto (pública: es la que el comprador escanea para
+// transferir). Solo métodos ACTIVOS del evento activo.
 // ------------------------------------------------------------
+router.get('/payment-qr/:methodId', ah(async (req, res) => {
+  const event = await getActiveEvent();
+  if (!event) return res.status(404).json({ error: 'No disponible' });
+  const [rows] = await pool.query(
+    'SELECT qr_image_path, qr_image_mime FROM payment_methods WHERE id = ? AND event_id = ? AND is_active = 1',
+    [String(req.params.methodId), event.id]
+  );
+  const method = rows[0];
+  if (!method || !method.qr_image_path) return res.status(404).json({ error: 'No disponible' });
+  const buffer = await readStoredFile(method.qr_image_path);
+  if (!buffer) return res.status(404).json({ error: 'No disponible' });
+  res.setHeader('Content-Type', method.qr_image_mime || 'image/png');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.send(buffer);
+}));
+
+// Compatibilidad: la ruta antigua sin :methodId sirve el QR del primer
+// método activo que tenga imagen (por si quedó referenciada en algún lado).
 router.get('/payment-qr', ah(async (req, res) => {
   const event = await getActiveEvent();
   if (!event) return res.status(404).json({ error: 'No disponible' });
-  const settings = await getPaymentSettings(event.id);
-  if (!settings || !settings.qr_image_path) return res.status(404).json({ error: 'No disponible' });
-  const buffer = await readStoredFile(settings.qr_image_path);
+  const methods = await getActivePaymentMethods(event.id);
+  const method = methods.find((m) => m.qr_image_path);
+  if (!method) return res.status(404).json({ error: 'No disponible' });
+  const buffer = await readStoredFile(method.qr_image_path);
   if (!buffer) return res.status(404).json({ error: 'No disponible' });
-  res.setHeader('Content-Type', settings.qr_image_mime || 'image/png');
+  res.setHeader('Content-Type', method.qr_image_mime || 'image/png');
   res.setHeader('Cache-Control', 'public, max-age=300');
   res.send(buffer);
 }));
@@ -174,6 +198,7 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
   const buyerDocument = String(body.buyer_document || '').trim().slice(0, 30) || null;
   const color = String(body.selected_color || '');
   const notes = String(body.notes || '').trim().slice(0, 500) || null;
+  const paymentMethodId = String(body.payment_method_id || '').trim();
 
   // ---- validaciones del formulario ----
   if (buyerName.length < 3 || buyerName.length > 120) {
@@ -203,12 +228,27 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
   const event = await getActiveEvent();
   if (!event) return res.status(409).json({ error: 'No hay un evento activo en este momento.' });
   const settings = await getPaymentSettings(event.id);
-  if (!settings || !settings.public_sales_enabled) {
+  const methods = await getActivePaymentMethods(event.id);
+  if (!settings || !settings.public_sales_enabled || !methods.length) {
     return res.status(409).json({ error: 'La venta web no está habilitada en este momento.' });
   }
-  const phase = await getCurrentPhase(event.id);
+
+  // Método de pago elegido: obligatorio y debe estar activo.
+  const method = methods.find((m) => m.id === paymentMethodId);
+  if (!method) {
+    return res.status(422).json({ error: 'Selecciona el banco o método al que hiciste tu transferencia.' });
+  }
+  const methodLabel = [method.bank_name, method.account_type].filter(Boolean).join(' · ').slice(0, 160);
+
+  // Fase vigente con auto-avance: si la fase por fecha agotó su cupo,
+  // se vende con la siguiente fase disponible (y su precio).
+  const { phase, allSoldOut } = await resolveCurrentPhase(event.id);
   if (!phase) {
-    return res.status(409).json({ error: 'No hay una fase de venta activa en este momento.' });
+    return res.status(409).json({
+      error: allSoldOut
+        ? 'Lo sentimos: los cupos de todas las fases de venta ya se agotaron.'
+        : 'No hay una fase de venta activa en este momento.',
+    });
   }
 
   const DUP_MESSAGE = 'Ya existe una solicitud registrada con estos datos o con este comprobante. '
@@ -226,16 +266,12 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
   );
   if (preDup.length) return res.status(409).json({ error: DUP_MESSAGE, duplicate: true });
 
-  // Disponibilidad (informativa: la definitiva se valida al aprobar).
-  // Nunca revelar cantidades: solo "agotado" genérico.
+  // Disponibilidad global (informativa: la definitiva se valida al
+  // aprobar). Nunca revelar cantidades: solo "agotado" genérico. El
+  // cupo por fase ya lo garantiza resolveCurrentPhase.
   const sold = await soldCount(event.id);
   if (sold >= event.total_tickets) {
     return res.status(409).json({ error: 'Lo sentimos: ya se agotaron las entradas disponibles.' });
-  }
-  if (await isPhaseSoldOut(phase)) {
-    return res.status(409).json({
-      error: 'Lo sentimos: los cupos de la fase de venta actual ya se agotaron. Mantente atento a la próxima fase.',
-    });
   }
 
   // ---- guardar comprobante y crear la solicitud ----
@@ -272,11 +308,15 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
       `INSERT INTO purchase_requests
          (id, request_code, event_id, buyer_name, buyer_email, buyer_phone, buyer_document,
           selected_color, sale_phase_id, phase_name, price,
+          payment_method_id, payment_method_label, bank_name,
+          account_number_snapshot, account_holder_snapshot,
           payment_proof_path, payment_proof_filename, payment_proof_mime, payment_proof_hash,
           status, notes, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, UTC_TIMESTAMP())`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, UTC_TIMESTAMP())`,
       [requestId, requestCode, event.id, buyerName, buyerEmail, buyerPhone, buyerDocument,
         color, phase.id, phase.name, phase.price,
+        method.id, methodLabel, method.bank_name,
+        method.account_number, method.account_holder,
         proofPathSaved, originalName, sniffed, proofHash, notes]
     );
     await conn.commit();
@@ -298,7 +338,7 @@ router.post('/purchase', purchaseLimiter, uploadProof, ah(async (req, res) => {
       [
         uuid(),
         `Nueva compra web · ${requestCode}`,
-        `${buyerName} envió un pago por validar · ${FLAG_LABELS[color] || color} · $${Number(phase.price).toFixed(2)} · ${phase.name}`,
+        `${buyerName} envió un pago por validar · ${FLAG_LABELS[color] || color} · $${Number(phase.price).toFixed(2)} · ${phase.name} · ${method.bank_name}`,
         requestId,
       ]
     );

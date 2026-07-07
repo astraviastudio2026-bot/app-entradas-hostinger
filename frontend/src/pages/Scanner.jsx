@@ -285,6 +285,14 @@ export default function Scanner() {
                       <ColorDot color={result.ticket.selected_color} /> {tkColor.label} · {tkColor.concept}
                     </span>
                   ) : null}
+                  <span className="scan-extra">{result.ticket.customer_email}</span>
+                  {result.ticket.customer_document || result.ticket.customer_phone ? (
+                    <span className="scan-extra">
+                      {[result.ticket.customer_document ? `CI ${result.ticket.customer_document}` : null,
+                        result.ticket.customer_phone ? `Cel. ${result.ticket.customer_phone}` : null]
+                        .filter(Boolean).join(' · ')}
+                    </span>
+                  ) : null}
                   <span className="scan-extra">
                     {result.ticket.phase_name || '—'} · {fmtMoney(result.ticket.price)}
                     {result.ticket.seller_name ? ` · Vendida por ${result.ticket.seller_name}` : ''}
